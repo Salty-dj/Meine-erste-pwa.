@@ -1,0 +1,32 @@
+{
+  "id": "/",
+  "name": "TSV Vereinsmanager – Handball Denkendorf",
+  "short_name": "TSV Manager",
+  "description": "Der geschützte Vereinsraum der Handballabteilung des TSV Denkendorf.",
+  "lang": "de",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f5f7fb",
+  "theme_color": "#123f94",
+  "icons": [
+    {
+      "src": "/tsv-icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/tsv-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/tsv-icon-maskable.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

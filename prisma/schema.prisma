@@ -1,0 +1,550 @@
+generator client {
+  provider   = "prisma-client-js"
+  engineType = "client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum RoleCode {
+  SUPERADMIN
+  CLUB_ADMIN
+  TEAM_MANAGER
+  WAREHOUSE_MANAGER
+  CASH_MANAGER
+  MEMBER
+}
+
+enum DutyStatus {
+  PLANNED
+  COMPLETED
+  CANCELLED
+}
+
+enum TaskStatus {
+  OPEN
+  IN_PROGRESS
+  DONE
+}
+
+enum OrderStatus {
+  DRAFT
+  ORDERED
+  PARTIAL
+  RECEIVED
+  CANCELLED
+}
+
+enum MovementType {
+  RECEIPT
+  ISSUE
+  TRANSFER
+  INVENTORY
+  SALE
+  REVERSAL
+}
+
+enum SaleStatus {
+  COMPLETED
+  CANCELLED
+}
+
+enum PaymentType {
+  CASH
+  CARD
+  OTHER
+}
+
+model User {
+  id                 String         @id @default(cuid())
+  email              String         @unique
+  name               String
+  passwordHash       String
+  active             Boolean        @default(true)
+  mustChangePassword Boolean        @default(true)
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+  roles              UserRole[]
+  sessions           Session[]
+  member             Member?
+  auditLogs          AuditLog[]
+  notifications      Notification[]
+  tasks              Task[]
+  attachments        Attachment[]
+
+  @@index([active])
+}
+
+model Role {
+  id    RoleCode   @id
+  label String
+  users UserRole[]
+}
+
+model UserRole {
+  userId String
+  roleId RoleCode
+  user   User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role   Role     @relation(fields: [roleId], references: [id], onDelete: Restrict)
+
+  @@id([userId, roleId])
+  @@index([roleId])
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model LoginThrottle {
+  key         String    @id
+  failures    Int       @default(0)
+  windowStart DateTime  @default(now())
+  lockedUntil DateTime?
+
+  @@index([windowStart])
+}
+
+model Member {
+  id                  String               @id @default(cuid())
+  userId              String?              @unique
+  firstName           String
+  lastName            String
+  email               String?
+  phone               String?
+  active              Boolean              @default(true)
+  qualifications      String[]             @default([])
+  user                User?                @relation(fields: [userId], references: [id], onDelete: SetNull)
+  teams               TeamMember[]
+  assignments         DutyAssignment[]
+  availability        Availability[]
+  swapRequests        DutySwapRequest[]    @relation("SwapTarget")
+  managedTeams        Team[]               @relation("TeamManager")
+  managedEvents       Event[]              @relation("EventManager")
+  checklistExecutions ChecklistExecution[]
+  createdAt           DateTime             @default(now())
+
+  @@index([lastName, firstName])
+}
+
+model Team {
+  id        String       @id @default(cuid())
+  name      String       @unique
+  ageGroup  String?
+  managerId String?
+  manager   Member?      @relation("TeamManager", fields: [managerId], references: [id], onDelete: SetNull)
+  members   TeamMember[]
+  shifts    DutyShift[]
+}
+
+model TeamMember {
+  memberId String
+  teamId   String
+  member   Member @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  team     Team   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  @@id([memberId, teamId])
+  @@index([teamId])
+}
+
+model Event {
+  id           String               @id @default(cuid())
+  title        String
+  type         String
+  description  String               @default("")
+  location     String
+  startsAt     DateTime
+  endsAt       DateTime
+  managerId    String?
+  budgetCents  Int                  @default(0)
+  followUp     String               @default("")
+  manager      Member?              @relation("EventManager", fields: [managerId], references: [id], onDelete: SetNull)
+  shifts       DutyShift[]
+  tasks        Task[]
+  reservations StockReservation[]
+  transactions FinanceTransaction[]
+  sales        Sale[]
+
+  @@index([startsAt])
+}
+
+model DutyType {
+  id     String      @id @default(cuid())
+  name   String      @unique
+  shifts DutyShift[]
+}
+
+model DutyShift {
+  id              String               @id @default(cuid())
+  typeId          String
+  eventId         String?
+  teamId          String?
+  startsAt        DateTime
+  endsAt          DateTime
+  location        String
+  requiredHelpers Int
+  status          DutyStatus           @default(PLANNED)
+  voluntary       Boolean              @default(true)
+  recurrenceGroup String?
+  type            DutyType             @relation(fields: [typeId], references: [id], onDelete: Restrict)
+  event           Event?               @relation(fields: [eventId], references: [id], onDelete: SetNull)
+  team            Team?                @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  assignments     DutyAssignment[]
+  checklists      ChecklistExecution[]
+
+  @@index([startsAt, endsAt])
+  @@index([teamId])
+  @@index([eventId])
+}
+
+model DutyAssignment {
+  id            String            @id @default(cuid())
+  shiftId       String
+  memberId      String
+  actualMinutes Int?
+  createdAt     DateTime          @default(now())
+  shift         DutyShift         @relation(fields: [shiftId], references: [id], onDelete: Restrict)
+  member        Member            @relation(fields: [memberId], references: [id], onDelete: Restrict)
+  swaps         DutySwapRequest[]
+
+  @@unique([shiftId, memberId])
+  @@index([memberId])
+}
+
+model DutySwapRequest {
+  id                    String         @id @default(cuid())
+  assignmentId          String
+  targetMemberId        String
+  status                String         @default("REQUESTED")
+  requesterApprovedAt   DateTime?
+  targetApprovedAt      DateTime?
+  coordinatorApprovedAt DateTime?
+  createdAt             DateTime       @default(now())
+  assignment            DutyAssignment @relation(fields: [assignmentId], references: [id], onDelete: Restrict)
+  targetMember          Member         @relation("SwapTarget", fields: [targetMemberId], references: [id], onDelete: Restrict)
+
+  @@index([assignmentId, status])
+}
+
+model Availability {
+  id        String   @id @default(cuid())
+  memberId  String
+  startsAt  DateTime
+  endsAt    DateTime
+  available Boolean
+  member    Member   @relation(fields: [memberId], references: [id], onDelete: Cascade)
+
+  @@index([memberId, startsAt, endsAt])
+}
+
+model ChecklistTemplate {
+  id         String               @id @default(cuid())
+  title      String
+  archived   Boolean              @default(false)
+  items      ChecklistItem[]
+  executions ChecklistExecution[]
+}
+
+model ChecklistItem {
+  id         String            @id @default(cuid())
+  templateId String
+  title      String
+  required   Boolean           @default(false)
+  position   Int
+  template   ChecklistTemplate @relation(fields: [templateId], references: [id], onDelete: Restrict)
+
+  @@unique([templateId, position])
+}
+
+model ChecklistExecution {
+  id          String            @id @default(cuid())
+  templateId  String
+  shiftId     String?
+  memberId    String?
+  completedAt DateTime?
+  createdAt   DateTime          @default(now())
+  template    ChecklistTemplate @relation(fields: [templateId], references: [id], onDelete: Restrict)
+  shift       DutyShift?        @relation(fields: [shiftId], references: [id], onDelete: SetNull)
+  member      Member?           @relation(fields: [memberId], references: [id], onDelete: SetNull)
+  results     ChecklistResult[]
+}
+
+model ChecklistResult {
+  id            String             @id @default(cuid())
+  executionId   String
+  titleSnapshot String
+  required      Boolean
+  checkedAt     DateTime?
+  comment       String             @default("")
+  execution     ChecklistExecution @relation(fields: [executionId], references: [id], onDelete: Restrict)
+
+  @@index([executionId])
+}
+
+model Task {
+  id            String         @id @default(cuid())
+  title         String
+  description   String         @default("")
+  status        TaskStatus     @default(OPEN)
+  highPriority  Boolean        @default(false)
+  dueAt         DateTime?
+  assigneeId    String?
+  eventId       String?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  assignee      User?          @relation(fields: [assigneeId], references: [id], onDelete: SetNull)
+  event         Event?         @relation(fields: [eventId], references: [id], onDelete: SetNull)
+  damageReports DamageReport[]
+
+  @@index([assigneeId, status])
+  @@index([eventId])
+}
+
+model DamageReport {
+  id          String   @id @default(cuid())
+  taskId      String
+  location    String
+  description String
+  createdAt   DateTime @default(now())
+  task        Task     @relation(fields: [taskId], references: [id], onDelete: Restrict)
+}
+
+model ProductCategory {
+  id       String    @id @default(cuid())
+  name     String    @unique
+  products Product[]
+}
+
+model Product {
+  id                 String              @id @default(cuid())
+  sku                String              @unique
+  name               String
+  categoryId         String
+  description        String              @default("")
+  unit               String
+  packSize           Int                 @default(1)
+  purchasePriceCents Int
+  salePriceCents     Int
+  minimumStock       Int                 @default(0)
+  barcode            String?             @unique
+  supplierId         String?
+  archived           Boolean             @default(false)
+  category           ProductCategory     @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  supplier           Supplier?           @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  movements          StockMovement[]
+  reservations       StockReservation[]
+  inventoryItems     InventoryItem[]
+  orderItems         PurchaseOrderItem[]
+  saleItems          SaleItem[]
+}
+
+model Warehouse {
+  id           String             @id @default(cuid())
+  name         String             @unique
+  movements    StockMovement[]
+  reservations StockReservation[]
+  inventories  Inventory[]
+}
+
+model StockMovement {
+  id          String       @id @default(cuid())
+  productId   String
+  warehouseId String
+  quantity    Int
+  type        MovementType
+  reason      String
+  reference   String?
+  batch       String?
+  bestBefore  DateTime?
+  createdAt   DateTime     @default(now())
+  product     Product      @relation(fields: [productId], references: [id], onDelete: Restrict)
+  warehouse   Warehouse    @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+
+  @@index([productId, warehouseId, createdAt])
+  @@index([reference])
+}
+
+model StockReservation {
+  id          String    @id @default(cuid())
+  productId   String
+  warehouseId String
+  eventId     String
+  quantity    Int
+  product     Product   @relation(fields: [productId], references: [id], onDelete: Restrict)
+  warehouse   Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  event       Event     @relation(fields: [eventId], references: [id], onDelete: Restrict)
+
+  @@unique([productId, warehouseId, eventId])
+}
+
+model Inventory {
+  id          String          @id @default(cuid())
+  warehouseId String
+  createdAt   DateTime        @default(now())
+  completedAt DateTime?
+  warehouse   Warehouse       @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  items       InventoryItem[]
+}
+
+model InventoryItem {
+  id               String    @id @default(cuid())
+  inventoryId      String
+  productId        String
+  expectedQuantity Int
+  countedQuantity  Int
+  inventory        Inventory @relation(fields: [inventoryId], references: [id], onDelete: Restrict)
+  product          Product   @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@unique([inventoryId, productId])
+}
+
+model Supplier {
+  id       String          @id @default(cuid())
+  name     String
+  email    String?
+  phone    String?
+  address  String?
+  products Product[]
+  orders   PurchaseOrder[]
+}
+
+model PurchaseOrder {
+  id         String              @id @default(cuid())
+  supplierId String
+  status     OrderStatus         @default(DRAFT)
+  createdAt  DateTime            @default(now())
+  supplier   Supplier            @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  items      PurchaseOrderItem[]
+  receipts   GoodsReceipt[]
+}
+
+model PurchaseOrderItem {
+  id         String         @id @default(cuid())
+  orderId    String
+  productId  String
+  quantity   Int
+  priceCents Int
+  order      PurchaseOrder  @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  product    Product        @relation(fields: [productId], references: [id], onDelete: Restrict)
+  receipts   GoodsReceipt[]
+
+  @@unique([orderId, productId])
+}
+
+model GoodsReceipt {
+  id          String            @id @default(cuid())
+  orderId     String
+  orderItemId String
+  quantity    Int
+  reference   String            @unique
+  createdAt   DateTime          @default(now())
+  order       PurchaseOrder     @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  item        PurchaseOrderItem @relation(fields: [orderItemId], references: [id], onDelete: Restrict)
+}
+
+model CashSession {
+  id           String    @id @default(cuid())
+  openedAt     DateTime  @default(now())
+  closedAt     DateTime?
+  openingCents Int
+  countedCents Int?
+  sales        Sale[]
+}
+
+model Sale {
+  id                 String      @id @default(cuid())
+  idempotencyKey     String      @unique
+  eventId            String?
+  cashSessionId      String
+  status             SaleStatus  @default(COMPLETED)
+  payment            PaymentType
+  totalCents         Int
+  createdAt          DateTime    @default(now())
+  cancelledAt        DateTime?
+  cancellationReason String?
+  event              Event?      @relation(fields: [eventId], references: [id], onDelete: SetNull)
+  cashSession        CashSession @relation(fields: [cashSessionId], references: [id], onDelete: Restrict)
+  items              SaleItem[]
+
+  @@index([eventId, createdAt])
+}
+
+model SaleItem {
+  id             String  @id @default(cuid())
+  saleId         String
+  productId      String
+  nameSnapshot   String
+  quantity       Int
+  unitPriceCents Int
+  sale           Sale    @relation(fields: [saleId], references: [id], onDelete: Restrict)
+  product        Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+}
+
+model FinanceTransaction {
+  id          String   @id @default(cuid())
+  eventId     String?
+  amountCents Int
+  costCenter  String
+  description String
+  bookedAt    DateTime
+  event       Event?   @relation(fields: [eventId], references: [id], onDelete: SetNull)
+
+  @@index([bookedAt, eventId])
+}
+
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  type      String
+  title     String
+  body      String
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt, createdAt])
+}
+
+model Attachment {
+  id         String   @id @default(cuid())
+  ownerId    String?
+  storageKey String   @unique
+  name       String
+  mimeType   String
+  sizeBytes  Int
+  entityType String
+  entityId   String
+  createdAt  DateTime @default(now())
+  owner      User?    @relation(fields: [ownerId], references: [id], onDelete: SetNull)
+
+  @@index([entityType, entityId])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  action     String
+  entityType String
+  entityId   String?
+  details    Json?
+  createdAt  DateTime @default(now())
+  actor      User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([entityType, entityId])
+}
+
+model AppSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}

@@ -1,1 +1,52 @@
-{"name":"klar-aufgaben","private":true,"version":"1.0.0","type":"module","scripts":{"dev":"vite --host 0.0.0.0","build":"tsc -b && vite build","preview":"vite preview --host 0.0.0.0","test":"vitest run"},"dependencies":{"react":"^19.2.0","react-dom":"^19.2.0","lucide-react":"^0.468.0"},"devDependencies":{"@types/react":"^19.2.0","@types/react-dom":"^19.2.0","@vitejs/plugin-react":"^5.1.0","typescript":"~5.9.3","vite":"^7.2.0","vite-plugin-pwa":"^1.1.0","vitest":"^3.2.0","@testing-library/react":"^16.3.0","@testing-library/user-event":"^14.6.1","jsdom":"^26.1.0"}}
+{
+  "name": "tsv-vereinsmanager",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev --hostname 0.0.0.0",
+    "build": "next build && node scripts/prepare-standalone.mjs",
+    "start": "node scripts/start.mjs",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:integration": "node scripts/test-integration.mjs",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate deploy",
+    "db:admin": "tsx scripts/create-admin.ts",
+    "db:backup": "node scripts/backup.mjs",
+    "db:prune": "tsx scripts/prune.ts",
+    "db:generate:wasm": "prisma generate --config prisma.cloud.config.ts",
+    "setup": "node scripts/init-env.mjs"
+  },
+  "dependencies": {
+    "@prisma/adapter-pg": "^6.19.3",
+    "@prisma/client": "^6.19.0",
+    "@radix-ui/react-slot": "^1.2.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.468.0",
+    "next": "^16.0.0",
+    "pg": "^8.23.1",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "tailwind-merge": "^3.3.0",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.1.0",
+    "@types/node": "^24.0.0",
+    "@types/pg": "^8.23.1",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "dotenv": "^17.0.0",
+    "eslint": "^9.0.0",
+    "eslint-config-next": "^16.0.0",
+    "prettier": "^3.10.1",
+    "prisma": "^6.19.0",
+    "tailwindcss": "^4.1.0",
+    "tsx": "^4.20.0",
+    "typescript": "~5.9.3",
+    "vitest": "^3.2.0"
+  }
+}

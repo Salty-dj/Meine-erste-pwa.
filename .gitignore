@@ -1,5 +1,14 @@
 node_modules/
+.next/
 dist/
-*.local
-
+coverage/
 *.tsbuildinfo
+.env
+.env.*
+!.env.example
+backups/
+*.dump
+*.log
+playwright-report/
+test-results/
+.local/

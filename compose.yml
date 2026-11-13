@@ -1,0 +1,56 @@
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: tsv
+      POSTGRES_DB: tsv
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env first}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tsv -d tsv"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  app:
+    profiles: [production]
+    build: .
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://tsv:${DB_PASSWORD}@db:5432/tsv?schema=public
+      APP_URL: ${APP_URL:?Set APP_URL}
+      SESSION_SECURE: ${SESSION_SECURE:-true}
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+  backup:
+    profiles: [production]
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      PGPASSWORD: ${DB_PASSWORD}
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./backups:/backups
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        umask 077
+        while true; do
+          stamp=$$(date -u +%Y%m%dT%H%M%SZ)
+          pg_dump -h db -U tsv -d tsv -Fc -f /backups/tsv-$$stamp.dump.tmp
+          pg_restore --list /backups/tsv-$$stamp.dump.tmp > /dev/null
+          mv /backups/tsv-$$stamp.dump.tmp /backups/tsv-$$stamp.dump
+          find /backups -name 'tsv-*.dump' -mtime +30 -delete
+          sleep 86400
+        done
+volumes:
+  postgres_data:
