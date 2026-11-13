@@ -1,0 +1,54 @@
+// @vitest-environment jsdom
+import { afterEach, beforeEach, expect, test, vi } from 'vitest';
+import { cleanup, render, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import App from './App';
+import { STORAGE_KEY } from './storage';
+beforeEach(()=>{localStorage.clear();HTMLDialogElement.prototype.showModal=function(){this.setAttribute('open','');};HTMLDialogElement.prototype.close=function(){this.removeAttribute('open');};});
+afterEach(()=>{cleanup();vi.restoreAllMocks();});
+test('create, edit, complete, reopen and delete a task; persist across remounts',async()=>{
+ const user=userEvent.setup();const result=render(<App/>);
+ await user.click(screen.getByRole('button',{name:'Neue Aufgabe'}));
+ await user.type(screen.getByLabelText('Was möchtest du erledigen?'),'Einkaufen');
+ await user.type(screen.getByLabelText(/Notizen/),'Milch und Brot');
+ await user.click(screen.getByRole('button',{name:'Aufgabe erstellen'}));
+ expect(screen.getByRole('heading',{name:'Einkaufen'})).toBeTruthy();
+ result.unmount();render(<App/>);
+ expect(screen.getByText('Milch und Brot')).toBeTruthy();
+ await user.click(screen.getByRole('button',{name:'Einkaufen bearbeiten'}));
+ const title=screen.getByLabelText('Was möchtest du erledigen?');await user.clear(title);await user.type(title,'Wocheneinkauf');
+ await user.click(screen.getByRole('button',{name:'Änderungen speichern'}));
+ await user.click(screen.getByRole('button',{name:'Wocheneinkauf erledigen'}));
+ await user.click(within(screen.getByRole('navigation')).getByRole('button',{name:/Erledigt/}));
+ await user.click(screen.getByRole('button',{name:'Wocheneinkauf wieder öffnen'}));
+ await user.click(within(screen.getByRole('navigation')).getByRole('button',{name:/Alle Aufgaben/}));
+ await user.click(screen.getByRole('button',{name:'Wocheneinkauf löschen'}));
+ await user.click(screen.getByRole('button',{name:'Löschen'}));
+ expect(JSON.parse(localStorage.getItem(STORAGE_KEY)!)).toEqual([]);
+});
+test('filters today and search, rejects blank titles',async()=>{
+ const user=userEvent.setup();render(<App/>);
+ await user.click(screen.getByRole('button',{name:'Neue Aufgabe'}));
+ await user.type(screen.getByLabelText('Was möchtest du erledigen?'),'   ');
+ expect(screen.getByRole('button',{name:'Aufgabe erstellen'}).hasAttribute('disabled')).toBe(true);
+ await user.clear(screen.getByLabelText('Was möchtest du erledigen?'));
+ await user.type(screen.getByLabelText('Was möchtest du erledigen?'),'Planen');
+ await user.click(screen.getByRole('button',{name:'Aufgabe erstellen'}));
+ await user.type(screen.getByRole('textbox',{name:'Aufgaben suchen'}),'Unbekannt');
+ expect(screen.getByText('Keine Treffer')).toBeTruthy();
+ await user.clear(screen.getByRole('textbox',{name:'Aufgaben suchen'}));
+ await user.click(within(screen.getByRole('navigation')).getByRole('button',{name:/Heute/}));
+ expect(screen.queryByRole('heading',{name:'Planen'})).toBeNull();
+});
+test('preserves corrupt stored data and reports storage write failures',async()=>{
+ localStorage.setItem(STORAGE_KEY,'broken');const result=render(<App/>);
+ expect(screen.getByRole('alert').textContent).toContain('nicht gelesen');
+ expect(localStorage.getItem(STORAGE_KEY)).toBe('broken');result.unmount();localStorage.clear();
+ render(<App/>);const user=userEvent.setup();
+ await user.click(screen.getByRole('button',{name:'Neue Aufgabe'}));
+ await user.type(screen.getByLabelText('Was möchtest du erledigen?'),'Nicht verlieren');
+ vi.spyOn(Storage.prototype,'setItem').mockImplementation(()=>{throw new Error('QuotaExceeded');});
+ await user.click(screen.getByRole('button',{name:'Aufgabe erstellen'}));
+ expect(screen.getAllByRole('alert')[0].textContent).toContain('Speichern nicht möglich');
+ expect(screen.getByLabelText('Was möchtest du erledigen?')).toBeTruthy();
+});
