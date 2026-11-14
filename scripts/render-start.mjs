@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { spawn, spawnSync } from "node:child_process";
+import { migrationUrl } from "./migration-url.mjs";
 
-// Render Free has no paid pre-deploy step/shell: migrate before accepting requests.
 if (!process.env.APP_URL || !process.env.DATABASE_URL) {
   console.error(
     "Render benötigt APP_URL und DATABASE_URL als Environment Variables.",
@@ -29,15 +29,24 @@ if (process.env.SESSION_SECURE === "false") {
   console.error("Render benötigt SESSION_SECURE=true.");
   process.exit(1);
 }
-for (const command of [
-  ["scripts/migrate.mjs"],
-  ["--import", "tsx", "scripts/render-bootstrap.ts"],
-]) {
-  const result = spawnSync(process.execPath, command, {
-    stdio: "inherit",
-    env: process.env,
-  });
-  if (result.status !== 0) process.exit(result.status ?? 1);
+// Check the migration history before serving traffic. Production writes are a separate operation.
+let connection;
+try {
+  connection = migrationUrl(process.env.DIRECT_URL || process.env.DATABASE_URL);
+} catch (error) {
+  console.error(error.message);
+  process.exit(1);
+}
+const migrationStatus = spawnSync(
+  process.execPath,
+  ["node_modules/prisma/build/index.js", "migrate", "status"],
+  { stdio: "inherit", env: { ...process.env, DATABASE_URL: connection } },
+);
+if (migrationStatus.status !== 0) {
+  console.error(
+    "Prisma-Migrationsstatus prüfen. Produktive Migrationen benötigen eine Freigabe.",
+  );
+  process.exit(migrationStatus.status ?? 1);
 }
 // Retain bootstrap values only in Render's secure configuration, not the app process.
 for (const key of [
