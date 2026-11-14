@@ -15,13 +15,14 @@ In Render **New → Web Service**, GitHub-Repository verbinden:
 | Root Directory     | **Leer lassen**                                |
 | Build Command      | `npm ci --include=dev && npm run render:build` |
 | Start Command      | `npm run render:start`                         |
+| Auto-Deploy        | After CI Checks Pass                           |
 | Health Check Path  | `/api/health`                                  |
 
 Der Build generiert den Prisma-Client und baut Next.js einschließlich Standalone-Dateien, Assets und Icons. `--include=dev` wird benötigt, weil TypeScript, Prisma CLI und `tsx` zum Build bzw. zur Migration/Ersteinrichtung benötigt werden. Nicht anschließend `npm prune --omit=dev` ausführen.
 
-Der Startbefehl führt die **normalen Prisma-Migrationen** aus, legt optional den ersten Administrator an und startet anschließend den Server auf **`0.0.0.0:$PORT`**. `PORT` wird von Render gesetzt; nicht manuell überschreiben. Bei fehlgeschlagener Migration oder Ersteinrichtung startet die App nicht mit einem halb eingerichteten Schema. Kein kostenpflichtiger Pre-Deploy-Schritt, keine Render-Datenbank und keine persistenten Render-Disks sind nötig.
+Vor dem Öffnen des HTTP-Ports prüft `npm run render:start` den Migrationsstatus mit `prisma migrate status`. Bei ausstehenden oder fehlerhaften Migrationen bricht der neue Start ab. Bei aktuellem Schema startet der Server auf **`0.0.0.0:$PORT`**. Render setzt `PORT` automatisch.
 
-Alternativ ist eine `render.yaml`-Blueprint-Datei enthalten. Sie enthält ausschließlich öffentliche Konfiguration und Eingabefelder für geheime Werte; sie erstellt nicht automatisch Ressourcen in diesem Arbeitsschritt. Optionalen Bootstrap und `DIRECT_URL` bei Bedarf im Render-Dashboard ergänzen.
+Alternativ ist eine `render.yaml`-Blueprint-Datei enthalten. Sie enthält ausschließlich öffentliche Konfiguration und Eingabefelder für geheime Werte; sie erstellt nicht automatisch Ressourcen in diesem Arbeitsschritt. `DIRECT_URL` bei Bedarf im Render-Dashboard ergänzen.
 
 ## Environment Variables: nur in Render eintragen
 
@@ -34,12 +35,8 @@ Alternativ ist eine `render.yaml`-Blueprint-Datei enthalten. Sie enthält aussch
 | `NODE_VERSION`    | `24`                                                                                         | Ja                    |
 | `DB_POOL_MAX`     | `3` (kleiner serverseitiger Pool für diesen Dienst)                                          | Empfohlen, Standard 3 |
 | `DIRECT_URL`      | Eigene Session-/Direktverbindung für Migrationen, wenn sie von `DATABASE_URL` abweichen soll | Optional              |
-| `BOOTSTRAP_ADMIN` | `true` für die erste Einrichtung, danach entfernen                                           | Nur beim Erststart    |
-| `ADMIN_EMAIL`     | E-Mail-Adresse des ersten Administrators                                                     | Bei Bootstrap         |
-| `ADMIN_NAME`      | Name des ersten Administrators                                                               | Bei Bootstrap         |
-| `ADMIN_PASSWORD`  | Einmaliges, langes Startpasswort mit mindestens 12 Zeichen                                   | Bei Bootstrap         |
 
-`DIRECT_URL` wird ausschließlich vom Migrationsprozess verwendet. Ohne `DIRECT_URL` verwendet er `DATABASE_URL`. Eine gesetzte falsche `DIRECT_URL` kann Migrationen auf der falschen Datenbank ausführen: beide Verbindungen müssen auf dieselbe Datenbank und dasselbe Schema zeigen. Die App selbst verwendet ausschließlich `DATABASE_URL` und berücksichtigt dessen `schema`-Parameter auch im PostgreSQL-Treiberadapter.
+`DIRECT_URL` wird für die Prisma-Migration und deren Statusprüfung verwendet. Ohne `DIRECT_URL` verwendet er `DATABASE_URL`. Eine gesetzte falsche `DIRECT_URL` kann Migrationen auf der falschen Datenbank ausführen: beide Verbindungen müssen auf dieselbe Datenbank und dasselbe Schema zeigen. Die App selbst verwendet ausschließlich `DATABASE_URL` und berücksichtigt dessen `schema`-Parameter auch im PostgreSQL-Treiberadapter.
 
 **Nicht benötigt:** Supabase-URL/API-Key, Anon-Key, Service-Role-Key, `NEXTAUTH_SECRET`, `AUTH_SECRET` oder ein zusätzliches Session-Secret. Diese App verwendet eigene zufällige, serverseitige Sessions statt Auth.js. `DB_PASSWORD` gehört nur zur lokalen Docker-Konfiguration. Nie eine Datenbankadresse oder ein Passwort mit `NEXT_PUBLIC_` veröffentlichen. Zugangsdaten weder in YAML noch `.env.example`, Issues, Pull Requests oder Chat speichern.
 
@@ -74,22 +71,24 @@ Optional kann **`DB_SSL_CA_FILE=/etc/secrets/supabase-ca.crt`** gesetzt werden, 
 - **Node.js / pg / PrismaPg**: Der Dateiinhalt wird als `ssl.ca` mit **`rejectUnauthorized: true`** geladen. SSL-URL-Parameter, die dieses explizite Objekt im pg-Treiber überschreiben könnten, werden aus der Runtime-Verbindungsadresse entfernt. TLS bleibt durch das explizite SSL-Objekt vorgeschrieben; die Standardprüfung des Hostnamens bleibt aktiv.
 - Das Vertrauen ist auf die Datenbankverbindung beschränkt. Es wird weder `NODE_TLS_REJECT_UNAUTHORIZED=0` gesetzt noch die globale Node-Zertifikatsprüfung verändert. `NODE_EXTRA_CA_CERTS` ist für diesen Datenbankpfad nicht erforderlich.
 
-Das echte Zertifikat und sämtliche Zugangsdaten bleiben in Render, nicht im Repository. Nach dem Aktualisieren des Branches **Manual Deploy → Deploy latest commit** verwenden. Bei weiterhin fehlerhafter Kette CA-Datei, PEM-Format und zum Supabase-Projekt passenden Pooler-Host prüfen; niemals die Prüfung abschalten.
+Das echte Zertifikat und sämtliche Zugangsdaten bleiben in Render, nicht im Repository. Neue Commits werden automatisch bereitgestellt, sobald die GitHub-Checks erfolgreich sind. Bei weiterhin fehlerhafter Kette CA-Datei, PEM-Format und zum Supabase-Projekt passenden Pooler-Host prüfen; niemals die Prüfung abschalten.
 
-## Erster Administrator ohne Render-Shell
+## Migrationen und erster Administrator
 
-Vor dem ersten Deploy `BOOTSTRAP_ADMIN=true`, `ADMIN_EMAIL`, `ADMIN_NAME` und `ADMIN_PASSWORD` als private Render-Variablen setzen. Es gibt kein Standardpasswort und keine offene Registrierung.
+GitHub Actions führt Migrationen und Integrationstests gegen eine temporäre PostgreSQL-Datenbank aus. Produktive Änderungen benötigen eine separate Freigabe.
 
-Nach erfolgreichem Start anmelden und das Startpasswort ändern. Danach `BOOTSTRAP_ADMIN` sowie die drei `ADMIN_*`-Variablen aus Render entfernen und neu deployen. Die Startvariablen werden nicht an den eigentlichen Webserverprozess weitergegeben. Ist bereits ein aktiver Superadministrator vorhanden, überschreibt ein weiterer Start weder Passwort noch Name oder Rollen. Ein Neustart ist **kein Passwortreset**. Fehlen bei ausdrücklich aktiviertem Bootstrap gültige Angaben, bricht der Start mit einer Meldung ohne Geheimwerte ab.
+1. Die SQL-Dateien der ausstehenden Migrationen am genauen Commit prüfen und CI abwarten.
+2. Nach Freigabe eine Sicherung anlegen. Auf einem vertrauenswürdigen Rechner den geprüften Commit auschecken, `npm ci` ausführen und die Supabase-Verbindung mit TLS-Prüfung lokal und vertraulich konfigurieren. Bei eigener CA-Datei `DB_SSL_CA_FILE` setzen.
+3. Am geprüften Commit `npm run db:migrate` ausführen. Wenn der vorherige Deploy wegen ausstehender Migrationen abgebrochen ist, in Render **Manual Deploy → Deploy latest commit** verwenden, sobald der aktuelle Branch-Commit der geprüften Version entspricht.
+4. In Render den erfolgreichen Start und `/api/health` prüfen.
 
-Alternativ den bisherigen `npm run db:admin`-Befehl auf einem vertrauenswürdigen eigenen Rechner mit derselben Datenbankverbindung ausführen. Eine bereits funktionierende Anmeldung oder ein vorhandener Administrator muss nicht neu angelegt werden.
+Falls bei einer Neuinstallation ein erster Administrator fehlt, nach Freigabe auf dem vertrauenswürdigen Rechner mit derselben Datenbankverbindung und nach `npm run db:generate` den Befehl `npm run db:admin` ausführen. Der Webserverstart legt keine Benutzer an.
 
 ## Grenzen des Free-Betriebs
 
 - Render Free kann bei Inaktivität einschlafen. Erster Aufruf und Healthcheck können nach einer Pause länger dauern.
 - Kein lokaler Dateispeicher darf für Vereinsdaten oder Backups genutzt werden; Deploys und Neustarts sind nicht persistent. Die App speichert ihre Daten in Supabase. Docker-Compose-Backupcontainer und Zeitpläne laufen auf Render Native nicht automatisch mit.
 - Supabase-Free-Projekte können eigene Pausen, Quoten und Sicherungsgrenzen haben. Freikontingente beider Anbieter prüfen; für verlässliche Sicherungen `npm run db:backup` auf einem vertrauenswürdigen externen Rechner/Zeitplan gegen die Session-Verbindung verwenden und verschlüsselt extern ablegen. Keine automatische kostenlose Sicherung durch Render behaupten.
-- Der Anwendungsstart migriert die Datenbank **vor** dem Öffnen des HTTP-Ports. Vor Schemaänderungen Sicherung anlegen; kein Reset und keine erfundene Migrationshistorie verwenden.
 - Persönliche Daten werden nicht im PWA-Cache gespeichert. Die geschützte App benötigt eine Netzwerkverbindung.
 
 Es wurden keine kostenpflichtigen Ressourcen eingerichtet. Die Einrichtung im Render-/Supabase-Konto und die Eingabe der realen Zugangsdaten bleiben beim Betreiber.
