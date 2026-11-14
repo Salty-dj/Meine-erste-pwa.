@@ -1,11 +1,25 @@
 "use client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, Settings, Users } from "lucide-react";
-export function Navigation({ admin }: { admin: boolean }) {
+import { CalendarDays, LayoutDashboard, Settings, Users } from "lucide-react";
+export function Navigation({
+  admin,
+  members,
+  ready,
+}: {
+  admin: boolean;
+  members: boolean;
+  ready: boolean;
+}) {
   const path = usePathname();
   const items = [
     { href: "/", label: "Dashboard", icon: LayoutDashboard },
+    ...(ready
+      ? [{ href: "/dienste", label: "Dienste", icon: CalendarDays }]
+      : []),
+    ...(members
+      ? [{ href: "/mitglieder", label: "Mitglieder & Teams", icon: Users }]
+      : []),
     ...(admin
       ? [{ href: "/benutzer", label: "Benutzer & Rollen", icon: Users }]
       : []),

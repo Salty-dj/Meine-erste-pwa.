@@ -746,7 +746,8 @@ label {
   font-weight: 500;
   color: #526784;
 }
-input:not([type="checkbox"]) {
+input:not([type="checkbox"]),
+.duty-module select {
   width: 100%;
   min-width: 0;
   border: 1px solid #dce5f1;
@@ -762,7 +763,8 @@ input::placeholder {
   color: #a8b4c6;
   font-size: 12px;
 }
-input:focus {
+input:focus,
+.duty-module select:focus {
   border-color: #6b96d8;
   box-shadow: 0 0 0 3px #dbe8fc80;
 }
@@ -1667,4 +1669,20 @@ legend {
   .check-label {
     font-size: 12px;
   }
+}
+
+.duty-module summary {
+  color: #2056b2;
+  cursor: pointer;
+  font-weight: 600;
+}
+.duty-module details[open] > summary {
+  margin-bottom: 14px;
+}
+.duty-module nav {
+  flex-wrap: wrap;
+}
+.duty-module a[aria-current="page"] {
+  background: #2056b2;
+  color: white;
 }

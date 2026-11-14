@@ -1,4 +1,4 @@
-# TSV Vereinsmanager · Phase 1
+# TSV Vereinsmanager
 
 Geschütztes Vereins-Grundsystem für die Handballabteilung des TSV Denkendorf. Deutschsprachig, responsive und als PWA installierbar. Next.js 16, React 19, striktes TypeScript, Tailwind CSS 4, lokal gepflegte UI-Komponenten nach dem shadcn/ui-Muster, PostgreSQL 17 und Prisma 6 mit PostgreSQL-Treiberadapter. Keine kostenpflichtige API, keine Cloud-Datenbank und kein externer Anmeldedienst sind erforderlich.
 
@@ -13,7 +13,7 @@ Geschütztes Vereins-Grundsystem für die Handballabteilung des TSV Denkendorf. 
 - Installierbare PWA mit eigenen generischen Icons. Offline wird ausschließlich eine öffentliche Hinweisseite angezeigt. Personenbezogene Seiten, APIs und Sitzungen werden niemals vom Service Worker gecacht.
 - Zwei SQL-Migrationen mit 39 verknüpften Fach-/Infrastrukturtabellen, Indizes und Constraints als Grundlage für den späteren Ausbau. Lagerbewegungen sind bereits auf Datenbankebene unveränderbar und gegen negative Bestände geschützt.
 
-**Fachmodule der Phasen 2–7 sind noch nicht umgesetzt.** Es gibt bewusst keine anklickbaren Scheinmodule. Der Ausbauplan steht im Konto-Bereich und in [docs/ROADMAP.md](docs/ROADMAP.md). Datenbanktabellen allein sind keine fertigen Fachfunktionen.
+**Mitglieder und Dienste** unterstützen Mannschaften, Mehrfachzuordnungen, Dienstplanung mit wöchentlichen Terminen, Selbstanmeldung, Verfügbarkeit, Diensttausch und Stundenerfassung. Vereinsadministratoren richten Mitglieder und Dienstarten ein. Mannschaftsverantwortliche planen die Dienste der ihnen zugewiesenen Mannschaften. Der weitere Ausbauplan steht im Konto-Bereich und in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Wichtig: Ablösung der bisherigen Aufgaben-App
 

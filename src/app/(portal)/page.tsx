@@ -197,11 +197,13 @@ export default async function Dashboard() {
             <Empty
               icon={CheckCircle2}
               title="Aktuell keine Dienste eingeteilt"
-              text="Deine persönlichen Dienste erscheinen hier, sobald die Dienstplanung eingerichtet ist."
+              text="In der Dienstübersicht siehst du freie Plätze und kommende Schichten."
             />
           )}
           <div className="panel-foot">
-            Dienstplanung und Dienstanmeldung folgen in Phase 2.
+            <Link href="/dienste?ansicht=meine">
+              Meine Dienste ansehen <ArrowUpRight size={14} />
+            </Link>
           </div>
         </section>
         <section className="panel">
@@ -269,7 +271,7 @@ export default async function Dashboard() {
             <Empty
               icon={Bell}
               title="Du bist auf dem aktuellen Stand"
-              text="Es liegen keine persönlichen Mitteilungen vor. Automatische Erinnerungen folgen mit den Fachmodulen."
+              text="Es liegen keine persönlichen Mitteilungen vor."
             />
           )}
           <div className="panel-foot">

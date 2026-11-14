@@ -1,4 +1,5 @@
 import { db } from "./db";
+import { dutyAccess, dutyScope } from "./duties";
 import { can } from "./roles";
 import type { sessionUser } from "./auth-service";
 type User = NonNullable<Awaited<ReturnType<typeof sessionUser>>>;
@@ -7,10 +8,7 @@ export async function getDashboard(user: User) {
   const club = can(user.roles, "club");
   const stock = can(user.roles, "stock");
   const finance = can(user.roles, "finance");
-  const member = await db.member.findUnique({
-    where: { userId: user.id },
-    select: { id: true },
-  });
+  const access = await dutyAccess(db, user);
   const taskWhere = club
     ? { status: { not: "DONE" as const } }
     : { assigneeId: user.id, status: { not: "DONE" as const } };
@@ -37,10 +35,10 @@ export async function getDashboard(user: User) {
         location: true,
       },
     }),
-    member
+    access.memberId
       ? db.dutyAssignment.findMany({
           where: {
-            memberId: member.id,
+            memberId: access.memberId,
             shift: { endsAt: { gte: now }, status: "PLANNED" },
           },
           include: { shift: { include: { type: true } } },
@@ -71,7 +69,7 @@ export async function getDashboard(user: User) {
       where: {
         status: "PLANNED",
         endsAt: { gte: now },
-        ...(club ? {} : { voluntary: true }),
+        ...dutyScope(access),
       },
       select: {
         requiredHelpers: true,
@@ -96,7 +94,7 @@ export async function getDashboard(user: User) {
       : Promise.resolve(null),
     can(user.roles, "team")
       ? db.team.findMany({
-          where: club ? {} : { manager: { userId: user.id } },
+          where: club ? {} : { id: { in: access.managed } },
           select: {
             name: true,
             members: {

@@ -110,14 +110,14 @@ export default async function Account() {
             ],
           ].map(([name, description], i) => (
             <li key={name}>
-              <span className={"phase-number " + (i === 0 ? "ready" : "")}>
+              <span className={"phase-number " + (i < 2 ? "ready" : "")}>
                 {i + 1}
               </span>
               <div>
                 <h3>
                   {name}
-                  <span className={"badge " + (i === 0 ? "green" : "")}>
-                    {i === 0 ? "Umgesetzt" : "Geplant"}
+                  <span className={"badge " + (i < 2 ? "green" : "")}>
+                    {i < 2 ? "Umgesetzt" : "Geplant"}
                   </span>
                 </h3>
                 <p>{description}</p>

@@ -1,12 +1,8 @@
 import Link from "next/link";
-import {
-  ArrowUpRight,
-  ChevronRight,
-  Heart,
-  LogOut,
-  ShieldCheck,
-} from "lucide-react";
+import { ChevronRight, Heart, LogOut, ShieldCheck } from "lucide-react";
 import { requireUser } from "@/lib/auth";
+import { db } from "@/lib/db";
+import { dutyAccess } from "@/lib/duties";
 import { roleLabels, can } from "@/lib/roles";
 import { Navigation } from "@/components/navigation";
 import { logout } from "./konto/actions";
@@ -17,6 +13,7 @@ export default async function PortalLayout({
   children: React.ReactNode;
 }) {
   const user = await requireUser();
+  const access = user.mustChangePassword ? null : await dutyAccess(db, user);
   return (
     <div className="portal">
       <aside className="sidebar">
@@ -35,19 +32,9 @@ export default async function PortalLayout({
         <div className="sidebar-caption">DEIN VEREINSRAUM</div>
         <Navigation
           admin={can(user.roles, "accounts") && !user.mustChangePassword}
+          members={!!(access?.club || access?.managed.length)}
+          ready={!user.mustChangePassword}
         />
-        <div className="sidebar-future">
-          <span className="phase-badge">GRUNDSYSTEM · PHASE 1</span>
-          <p>
-            Ein Verein.
-            <br />
-            <strong>Viele Möglichkeiten.</strong>
-          </p>
-          <span>Mitglieder, Dienste und Lager folgen schrittweise.</span>
-          <Link href="/konto#ausbau">
-            Entwicklungsstand <ArrowUpRight size={14} />
-          </Link>
-        </div>
         <div className="sidebar-bottom">
           <ShieldCheck size={17} />
           <span>
