@@ -7,7 +7,7 @@ Die folgenden Prüfungen wurden in der Cloud-Entwicklungsumgebung ausgeführt. S
 | ESLint                                                             | Erfolgreich, ohne Warnungen                                                                                   |
 | TypeScript strict                                                  | Erfolgreich                                                                                                   |
 | Produktionsbuild mit Next.js                                       | Erfolgreich, Standalone-Ausgabe einschließlich statischer Dateien                                             |
-| Unit-Tests                                                         | 8 erfolgreich (einschließlich Render-/Supabase-Konfiguration und TLS-Übersetzung)                             |
+| Unit-Tests                                                         | 11 erfolgreich (einschließlich CA-Datei, strikter TLS-Konfiguration und Migrations-CA)                        |
 | Integrationstests gegen separate PostgreSQL-17-Datenbank           | 9 erfolgreich (einschließlich Bootstrap-Schutz)                                                               |
 | Beide SQL-Migrationen mit `psql` auf leeren Datenbanken angewendet | Erfolgreich                                                                                                   |
 | Standard `prisma migrate deploy`                                   | Erfolgreich: alle drei Migrationen auf leerer PostgreSQL-17-Datenbank und erneut ohne ausstehende Migrationen |
@@ -43,3 +43,16 @@ Lokale Validierungsdatenbanken wurden per SQL aufgebaut, weil die native Migrati
 - Es gibt keine Änderung an `.github/`, `legacy/`, den bisherigen öffentlichen Website-Dateien oder dem GitHub-Pages-Branch `main` durch diesen Render-Patch.
 
 Noch offen: tatsächliche Render-/Supabase-Projektbereitstellung und Verbindung mit den realen, ausschließlich dort zu hinterlegenden Zugangsdaten. Es werden keine erfolgreichen Live-Supabase-Verbindungen oder bereits veröffentlichte Render-Dienste behauptet.
+
+## Supabase-CA-Unterstützung
+
+Zusätzlich auf dem Render-Branch geprüft:
+
+- PostgreSQL 17 in einem getrennten Testcontainer mit selbst erzeugter, ausschließlich lokal gespeicherter Test-CA und einem für `localhost` ausgestellten Serverzertifikat.
+- `pg` und die native Prisma-Migrationsengine verbinden sich mit korrekter CA erfolgreich; alle Migrationen wurden über TLS angewendet.
+- Beide Clients weisen eine fremde CA und einen Hostnamen, der nicht zum Zertifikat passt, zurück. Die Hostnamenprüfung wurde nicht überschrieben.
+- Alle neun Geschäftslogik-Integrationstests laufen auch über diese verifizierte TLS-Verbindung erfolgreich.
+- Elf Unit-Tests prüfen einschließlich Dateifehlern und gegen SSL-URL-Overrides abgesicherter CA-Konfiguration. Zertifikatfixture stammt aus öffentlichen System-Roots; keine produktiven Zertifikate oder privaten Schlüssel sind eingecheckt.
+- Build, Typprüfung und Linting erfolgreich. GitHub Pages, `main`, Website-Dateien und bestehende Workflows unverändert.
+
+Die echte Datei `/etc/secrets/supabase-ca.crt` liegt ausschließlich beim Betreiber in Render. Der lokale TLS-Test belegt die Einbindung und Verifikation; der tatsächliche Supabase-Deploy muss nach dem Push in Render gestartet werden.

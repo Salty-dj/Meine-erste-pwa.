@@ -64,6 +64,18 @@ Die zusätzliche, additive Migration schützt nur die bekannten Anwendungstabell
 
 Bei einem eigenen Schema z. B. `?schema=tsv` in **beiden** URLs verwenden. Die neue Migration fixiert außerdem den `search_path` der Lager-Trigger auf das Migrationsschema. Standardmäßig bleibt für bestehende Installationen `public` erhalten; es findet kein automatisches Verschieben vorhandener Daten statt.
 
+## Supabase-CA als Render Secret File
+
+Unter **Render → Environment → Secret Files** das offizielle Supabase-CA-Zertifikat im PEM-Format mit dem Dateinamen **`supabase-ca.crt`** hinterlegen. Render stellt es unter **`/etc/secrets/supabase-ca.crt`** bereit. Diese Datei wird automatisch erkannt; Build- und Startbefehl bleiben unverändert.
+
+Optional kann **`DB_SSL_CA_FILE=/etc/secrets/supabase-ca.crt`** gesetzt werden, um den Pfad ausdrücklich vorzugeben. Bei einem ausdrücklich gesetzten, aber nicht lesbaren oder ungültigen Zertifikat wird abgebrochen, statt stillschweigend auf andere Vertrauenseinstellungen zurückzufallen. Ohne Datei und ohne diese Variable bleibt der bisherige lokale/System-CA-Betrieb unverändert.
+
+- **Native Prisma-Migrationen**: Die CA-Datei wird sowohl bei `DATABASE_URL` als auch bei einer separaten `DIRECT_URL` mit `sslcert=<absoluter Dateipfad>` eingebunden. Es werden zwingend `sslmode=require` und `sslaccept=strict` verwendet.
+- **Node.js / pg / PrismaPg**: Der Dateiinhalt wird als `ssl.ca` mit **`rejectUnauthorized: true`** geladen. SSL-URL-Parameter, die dieses explizite Objekt im pg-Treiber überschreiben könnten, werden aus der Runtime-Verbindungsadresse entfernt. TLS bleibt durch das explizite SSL-Objekt vorgeschrieben; die Standardprüfung des Hostnamens bleibt aktiv.
+- Das Vertrauen ist auf die Datenbankverbindung beschränkt. Es wird weder `NODE_TLS_REJECT_UNAUTHORIZED=0` gesetzt noch die globale Node-Zertifikatsprüfung verändert. `NODE_EXTRA_CA_CERTS` ist für diesen Datenbankpfad nicht erforderlich.
+
+Das echte Zertifikat und sämtliche Zugangsdaten bleiben in Render, nicht im Repository. Nach dem Aktualisieren des Branches **Manual Deploy → Deploy latest commit** verwenden. Bei weiterhin fehlerhafter Kette CA-Datei, PEM-Format und zum Supabase-Projekt passenden Pooler-Host prüfen; niemals die Prüfung abschalten.
+
 ## Erster Administrator ohne Render-Shell
 
 Vor dem ersten Deploy `BOOTSTRAP_ADMIN=true`, `ADMIN_EMAIL`, `ADMIN_NAME` und `ADMIN_PASSWORD` als private Render-Variablen setzen. Es gibt kein Standardpasswort und keine offene Registrierung.
