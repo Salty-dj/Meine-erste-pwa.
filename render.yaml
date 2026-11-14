@@ -1,0 +1,24 @@
+# Optional Render Blueprint. Existing GitHub Pages is not connected to this service.
+# Set the repository and branch to feat/render-supabase in Render's service UI.
+services:
+  - type: web
+    name: tsv-vereinsmanager
+    runtime: node
+    plan: free
+    branch: feat/render-supabase
+    buildCommand: npm ci --include=dev && npm run render:build
+    startCommand: npm run render:start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "24"
+      - key: NODE_ENV
+        value: production
+      - key: SESSION_SECURE
+        value: "true"
+      - key: DB_POOL_MAX
+        value: "3"
+      - key: APP_URL
+        sync: false
+      - key: DATABASE_URL
+        sync: false

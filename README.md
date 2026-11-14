@@ -21,6 +21,10 @@ Dies ist eine Serveranwendung, kein statischer Vite-Build. **GitHub Pages kann d
 
 Der Pages-Workflow ist durch CI ersetzt. Die letzte erfolgreich veröffentlichte Pages-Version bleibt zunächst bestehen. Eine neue Serverbereitstellung ist separat erforderlich; ein Merge allein stellt den Vereinsmanager nicht online.
 
+## Render Free + Supabase
+
+Für diesen Branch ist der vollständige, geprüfte Einrichtungsweg in [docs/RENDER.md](docs/RENDER.md) dokumentiert. **Render-Branch: `feat/render-supabase`**, Root Directory leer, Build `npm ci --include=dev && npm run render:build`, Start `npm run render:start`. Geheimwerte ausschließlich im Render-Dashboard eingeben. Die Render-Anpassungen werden nicht nach `main` gepusht; die bestehende GitHub-Pages-Website bleibt unverändert.
+
 ## Voraussetzungen
 
 - Node.js **24 LTS**, npm (mitgeliefert), Git

@@ -12,12 +12,14 @@
     "test": "vitest run",
     "test:integration": "node scripts/test-integration.mjs",
     "db:generate": "prisma generate",
-    "db:migrate": "prisma migrate deploy",
+    "db:migrate": "node scripts/migrate.mjs",
     "db:admin": "tsx scripts/create-admin.ts",
     "db:backup": "node scripts/backup.mjs",
     "db:prune": "tsx scripts/prune.ts",
     "db:generate:wasm": "prisma generate --config prisma.cloud.config.ts",
-    "setup": "node scripts/init-env.mjs"
+    "setup": "node scripts/init-env.mjs",
+    "render:build": "npm run db:generate && npm run build",
+    "render:start": "node scripts/render-start.mjs"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^6.19.3",

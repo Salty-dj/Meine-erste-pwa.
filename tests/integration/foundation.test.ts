@@ -297,3 +297,27 @@ test("concurrent stock withdrawals cannot oversell the last item", async () => {
     )._sum.quantity,
   ).toBe(0);
 });
+
+test("one-time Render bootstrap never resets an existing active administrator", async () => {
+  const { bootstrapAdmin } = await import("../../src/lib/bootstrap");
+  const before = await db.user.findUniqueOrThrow({ where: { id: adminId } });
+  expect(
+    await bootstrapAdmin({
+      email: before.email,
+      name: "DEMO Should not replace",
+      password: "Different-Startpasswort-123!",
+      roles: ["SUPERADMIN"],
+    }),
+  ).toBe(false);
+  const after = await db.user.findUniqueOrThrow({ where: { id: adminId } });
+  expect(after.passwordHash).toBe(before.passwordHash);
+  expect(after.name).toBe(before.name);
+  await expect(
+    bootstrapAdmin({
+      email: "invalid",
+      name: "DEMO",
+      password: "short",
+      roles: ["SUPERADMIN"],
+    }),
+  ).rejects.toThrow();
+});
