@@ -5,14 +5,17 @@ export const roleLabels: Record<RoleCode, string> = {
   TEAM_MANAGER: "Mannschaftsverantwortlicher",
   WAREHOUSE_MANAGER: "Lagerverantwortlicher",
   CASH_MANAGER: "Kassenverantwortlicher",
+  HALL_CATERING: "Hallenbewirtung",
   MEMBER: "Mitglied / Helfer",
 };
 export const roleCodes = Object.keys(roleLabels) as RoleCode[];
-export type Permission = "accounts" | "club" | "stock" | "finance" | "team";
+export type Permission =
+  "accounts" | "club" | "stock" | "finance" | "team" | "hall";
 export function can(roles: readonly RoleCode[], permission: Permission) {
   if (roles.includes("SUPERADMIN")) return true;
   if (permission === "accounts") return false;
   if (roles.includes("CLUB_ADMIN")) return true;
+  if (permission === "hall") return roles.includes("HALL_CATERING");
   return permission === "stock"
     ? roles.includes("WAREHOUSE_MANAGER")
     : permission === "finance"

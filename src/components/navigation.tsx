@@ -1,7 +1,13 @@
 "use client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { CalendarDays, LayoutDashboard, Settings, Users } from "lucide-react";
+import {
+  CalendarDays,
+  LayoutDashboard,
+  Settings,
+  Users,
+  Utensils,
+} from "lucide-react";
 export function Navigation({
   admin,
   members,
@@ -16,6 +22,9 @@ export function Navigation({
     { href: "/", label: "Dashboard", icon: LayoutDashboard },
     ...(ready
       ? [{ href: "/dienste", label: "Dienste", icon: CalendarDays }]
+      : []),
+    ...(ready
+      ? [{ href: "/hallenbewirtung", label: "Hallenbewirtung", icon: Utensils }]
       : []),
     ...(members
       ? [{ href: "/mitglieder", label: "Mitglieder & Teams", icon: Users }]

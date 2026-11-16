@@ -14,6 +14,7 @@ enum RoleCode {
   TEAM_MANAGER
   WAREHOUSE_MANAGER
   CASH_MANAGER
+  HALL_CATERING
   MEMBER
 }
 
@@ -128,6 +129,8 @@ model Member {
   assignments         DutyAssignment[]
   availability        Availability[]
   swapRequests        DutySwapRequest[]    @relation("SwapTarget")
+  hallShifts          HallShift[]
+  hallTasks           HallTask[]
   managedTeams        Team[]               @relation("TeamManager")
   managedEvents       Event[]              @relation("EventManager")
   checklistExecutions ChecklistExecution[]
@@ -144,6 +147,8 @@ model Team {
   manager   Member?      @relation("TeamManager", fields: [managerId], references: [id], onDelete: SetNull)
   members   TeamMember[]
   shifts    DutyShift[]
+  hallShifts HallShift[]
+  hallMatches HallMatch[]
 }
 
 model TeamMember {
@@ -547,4 +552,72 @@ model AppSetting {
   key       String   @id
   value     Json
   updatedAt DateTime @updatedAt
+}
+
+enum HallTaskKind {
+  PURCHASE
+  OPEN
+  CLOSE
+}
+
+model HallPlan {
+  id          String    @id @default(cuid())
+  title       String
+  venue       String
+  day         String
+  startsAt    DateTime
+  endsAt      DateTime
+  notes       String    @default("")
+  publishedAt DateTime?
+  rules       Json?
+  revision    Int       @default(0)
+  generatedKey String?  @unique
+  shifts      HallShift[]
+  tasks       HallTask[]
+
+  @@index([day])
+}
+
+model HallShift {
+  id              String        @id @default(cuid())
+  planId          String
+  teamId          String?
+  startsAt        DateTime
+  endsAt          DateTime
+  requiredHelpers Int
+  locked          Boolean       @default(false)
+  conflict        String        @default("")
+  plan            HallPlan      @relation(fields: [planId], references: [id], onDelete: Cascade)
+  team            Team?         @relation(fields: [teamId], references: [id], onDelete: Restrict)
+  members         Member[]
+
+  @@index([planId, startsAt])
+  @@index([teamId, startsAt])
+}
+
+model HallTask {
+  id      String @id @default(cuid())
+  planId  String
+  kind    HallTaskKind
+  plan    HallPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  members Member[]
+
+  @@unique([planId, kind])
+}
+
+model HallMatch {
+  id        String   @id @default(cuid())
+  sourceKey String   @unique
+  number    String?
+  teamId    String
+  home      String
+  away      String
+  venue     String
+  ownHome   Boolean
+  startsAt  DateTime
+  endsAt    DateTime
+  team      Team     @relation(fields: [teamId], references: [id], onDelete: Restrict)
+
+  @@index([startsAt])
+  @@index([teamId, startsAt])
 }

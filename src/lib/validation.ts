@@ -28,7 +28,7 @@ export const createUserSchema = z.object({
       ),
     )
     .min(1, "Mindestens eine Rolle wählen.")
-    .max(6),
+    .max(roleCodes.length),
 });
 export const updateRolesSchema = z.object({
   userId: z.string().cuid(),

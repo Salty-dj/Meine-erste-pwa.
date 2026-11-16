@@ -5,6 +5,8 @@ const config: NextConfig = {
     ? [`${process.env.CODESPACE_NAME}-3000.app.github.dev`]
     : [],
   output: "standalone",
+  serverExternalPackages: ["pdf-parse", "exceljs"],
+  experimental: { serverActions: { bodySizeLimit: "4mb" } },
   async headers() {
     return [
       {

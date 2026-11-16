@@ -1686,3 +1686,111 @@ legend {
   background: #2056b2;
   color: white;
 }
+
+.hall-module textarea {
+  min-height: 82px;
+  width: 100%;
+  border: 1px solid #dce5f1;
+  border-radius: 8px;
+  padding: 12px;
+  font: inherit;
+}
+.hall-module details > .stack {
+  margin-top: 14px;
+}
+.hall-choices {
+  max-height: 220px;
+  overflow: auto;
+  padding: 6px;
+}
+.hall-team-row {
+  display: grid;
+  grid-template-columns: minmax(100px, 2fr) 1fr 1fr minmax(85px, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+.hall-filter {
+  align-self: start;
+  color: #2454a1;
+  font-weight: 600;
+  text-decoration: underline;
+}
+.hall-table {
+  overflow-x: auto;
+}
+.hall-table table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+}
+.hall-table th,
+.hall-table td {
+  padding: 9px;
+  vertical-align: top;
+  border-bottom: 1px solid #dce5f1;
+}
+.hall-notes {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.hall-responsibilities {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+}
+.hall-responsibilities dt {
+  font-weight: 700;
+}
+.hall-plan {
+  scroll-margin-top: 20px;
+}
+@media (max-width: 600px) {
+  .hall-team-row {
+    grid-template-columns: 1fr 1fr;
+  }
+  .hall-team-row > strong,
+  .hall-team-row > label:last-child {
+    grid-column: 1 / -1;
+  }
+  .hall-table table,
+  .hall-table tbody,
+  .hall-table tr {
+    display: block;
+  }
+  .hall-table thead {
+    position: absolute;
+    clip-path: inset(50%);
+  }
+  .hall-table td,
+  .hall-table th {
+    display: block;
+    padding: 4px 0;
+    border: 0;
+  }
+  .hall-table tr {
+    padding: 10px 0;
+    border-bottom: 1px solid #dce5f1;
+  }
+  .hall-table td::before {
+    content: attr(data-label) ": ";
+    font-weight: 700;
+  }
+}
+@media print {
+  body:has(.hall-module)
+    :is(.sidebar, .topbar, .site-footer, .skip-link, .hall-editor) {
+    display: none !important;
+  }
+  body:has(.hall-module) :is(.workspace, .main-content) {
+    margin: 0;
+    padding: 0;
+    max-width: none;
+  }
+  .hall-plan {
+    break-inside: avoid;
+    box-shadow: none;
+  }
+  .hall-table {
+    overflow: visible;
+  }
+}
