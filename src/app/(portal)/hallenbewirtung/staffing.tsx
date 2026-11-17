@@ -1,6 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import {
+  createContext,
+  useContext,
+  useId,
+  useState,
+  type ReactNode,
+} from "react";
 import { Button } from "@/components/ui/button";
 import { updateHallManagers, updateHallStaffing } from "./actions";
 import {
@@ -8,8 +14,108 @@ import {
   PersonCheck,
   TeamOptions,
   useHall,
+  send,
+  responsibility,
   type Choice,
 } from "./editor";
+
+const FestEditing = createContext(false);
+
+export function FestEditMode({
+  allowed,
+  children,
+}: {
+  allowed: boolean;
+  children: ReactNode;
+}) {
+  const [editing, setEditing] = useState(false);
+  return (
+    <FestEditing.Provider value={allowed && editing}>
+      {allowed && (
+        <Button
+          className="hall-editor"
+          type="button"
+          variant="outline"
+          aria-pressed={editing}
+          onClick={() => setEditing(!editing)}
+        >
+          {editing ? "Bearbeitung schließen" : "Bearbeiten"}
+        </Button>
+      )}
+      {children}
+    </FestEditing.Provider>
+  );
+}
+
+export function FestEditingOnly({ children }: { children: ReactNode }) {
+  return useContext(FestEditing) ? (
+    <div className="stack hall-editor">{children}</div>
+  ) : null;
+}
+
+export function FestTaskNames({
+  id,
+  revision,
+  initial,
+}: {
+  id: string;
+  revision: number;
+  initial: Record<keyof typeof responsibility, string[]>;
+}) {
+  const [names, setNames] = useState({
+    PURCHASE: initial.PURCHASE.join("\n"),
+    OPEN: initial.OPEN.join("\n"),
+    CLOSE: initial.CLOSE.join("\n"),
+  });
+  const { run, pending, message } = useHall();
+  return (
+    <form
+      className="hall-staffing-form"
+      onSubmit={(event) => {
+        event.preventDefault();
+        const split = (value: string) =>
+          value
+            .split(/\r?\n/)
+            .map((name) => name.trim())
+            .filter(Boolean);
+        run(async () => {
+          await send("tasks", {
+            id,
+            revision,
+            names: {
+              PURCHASE: split(names.PURCHASE),
+              OPEN: split(names.OPEN),
+              CLOSE: split(names.CLOSE),
+            },
+          });
+          return "Verantwortliche gespeichert.";
+        });
+      }}
+    >
+      <fieldset disabled={pending}>
+        <legend>Verantwortliche eintragen</legend>
+        {(Object.keys(responsibility) as (keyof typeof responsibility)[]).map(
+          (kind) => (
+            <label key={kind}>
+              {responsibility[kind]}
+              <textarea
+                rows={2}
+                maxLength={16100}
+                value={names[kind]}
+                placeholder="Ein Name pro Zeile"
+                onChange={(event) =>
+                  setNames({ ...names, [kind]: event.target.value })
+                }
+              />
+            </label>
+          ),
+        )}
+        <Button disabled={pending}>Verantwortliche speichern</Button>
+      </fieldset>
+      <Notice message={message} />
+    </form>
+  );
+}
 
 export function StaffingRow({
   shift,
@@ -23,6 +129,8 @@ export function StaffingRow({
     id: string;
     staffingRevision: number;
     teamId: string | null;
+    start: string;
+    end: string;
     team: { name: string } | null;
     requiredHelpers: number;
     helperNames: string[];
@@ -34,7 +142,11 @@ export function StaffingRow({
   canEditPeople: boolean;
   notices: string[];
 }) {
+  const editing = useContext(FestEditing);
+  const shiftForm = useId();
   const [teamId, setTeamId] = useState(shift.teamId ?? "");
+  const [start, setStart] = useState(shift.start);
+  const [end, setEnd] = useState(shift.end);
   const [names, setNames] = useState(shift.helperNames);
   const [removed, setRemoved] = useState<string[]>([]);
   const { run, pending, message } = useHall();
@@ -49,29 +161,58 @@ export function StaffingRow({
 
   return (
     <tr>
-      <td data-label="Schicht">{time}</td>
+      <td data-label="Schicht">
+        {time}
+        {editing && canChangeTeam && (
+          <form
+            id={shiftForm}
+            className="hall-editor hall-staffing-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              run(async () => {
+                const response = await updateHallStaffing({
+                  kind: "team",
+                  ...identity,
+                  teamId: teamId || null,
+                  times: { start, end },
+                });
+                if (!response.ok) throw new Error(response.error);
+                return "Schicht gespeichert.";
+              });
+            }}
+          >
+            <label>
+              Beginn
+              <input
+                type="datetime-local"
+                required
+                disabled={pending}
+                value={start}
+                onChange={(event) => setStart(event.target.value)}
+              />
+            </label>
+            <label>
+              Ende
+              <input
+                type="datetime-local"
+                required
+                disabled={pending}
+                value={end}
+                onChange={(event) => setEnd(event.target.value)}
+              />
+            </label>
+          </form>
+        )}
+      </td>
       <td data-label="Mannschaft">
-        {canChangeTeam ? (
+        {editing && canChangeTeam ? (
           <>
             <span className="hall-print-only">
               {shift.team?.name ?? "Keine Mannschaft"}
             </span>
-            <form
-              className="hall-editor hall-staffing-form"
-              onSubmit={(event) => {
-                event.preventDefault();
-                run(async () => {
-                  const response = await updateHallStaffing({
-                    kind: "team",
-                    ...identity,
-                    teamId: teamId || null,
-                  });
-                  if (!response.ok) throw new Error(response.error);
-                  return "Mannschaft gespeichert.";
-                });
-              }}
-            >
+            <div className="hall-editor hall-staffing-form">
               <select
+                form={shiftForm}
                 aria-label={`Mannschaft für ${time}`}
                 value={teamId}
                 disabled={pending}
@@ -80,10 +221,14 @@ export function StaffingRow({
                 <option value="">Keine Mannschaft</option>
                 <TeamOptions options={teams} />
               </select>
-              {teamId !== (shift.teamId ?? "") && (
-                <Button disabled={pending}>Mannschaft speichern</Button>
+              {(teamId !== (shift.teamId ?? "") ||
+                start !== shift.start ||
+                end !== shift.end) && (
+                <Button form={shiftForm} disabled={pending}>
+                  Schicht speichern
+                </Button>
               )}
-            </form>
+            </div>
           </>
         ) : (
           (shift.team?.name ?? "Keine Mannschaft")
@@ -96,7 +241,7 @@ export function StaffingRow({
         <span>
           {listed.length}/{shift.requiredHelpers}
         </span>
-        {canEditPeople && (
+        {editing && canEditPeople && (
           <details className="hall-editor">
             <summary>Personen bearbeiten</summary>
             <form
@@ -165,9 +310,11 @@ export function StaffingRow({
             </form>
           </details>
         )}
-        <div className="hall-editor">
-          <Notice message={message} />
-        </div>
+        {editing && (
+          <div className="hall-editor">
+            <Notice message={message} />
+          </div>
+        )}
       </td>
       <td data-label="Status">
         {[

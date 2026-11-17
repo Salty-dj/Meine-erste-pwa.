@@ -613,6 +613,7 @@ model HallTask {
   id      String @id @default(cuid())
   planId  String
   kind    HallTaskKind
+  helperNames String[] @default([])
   plan    HallPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
   members Member[]
 

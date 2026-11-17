@@ -1839,3 +1839,14 @@ legend {
     display: inline;
   }
 }
+
+.hall-staffing-form :is(input[type="datetime-local"], textarea) {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  font-size: 16px;
+}
+
+.hall-staffing-form textarea {
+  resize: vertical;
+}

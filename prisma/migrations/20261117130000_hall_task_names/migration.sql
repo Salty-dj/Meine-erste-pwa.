@@ -1,0 +1,2 @@
+ALTER TABLE "HallTask"
+    ADD COLUMN "helperNames" TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[];

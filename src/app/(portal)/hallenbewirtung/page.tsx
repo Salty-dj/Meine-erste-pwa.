@@ -2,15 +2,16 @@ import Link from "next/link";
 import { db } from "@/lib/db";
 import { requireReadyUser } from "@/lib/auth";
 import { can } from "@/lib/roles";
-import {
-  dayOf,
-  hallDay,
-  overlap,
-  wallMinutes,
-  wallValue,
-} from "@/lib/hall/planner";
+import { dayOf, hallDay, overlap, wallValue } from "@/lib/hall/planner";
 import { hallPlanScope } from "@/lib/hall/service";
-import { HallTeamManagers, StaffingRow } from "./staffing";
+import {
+  FestEditMode,
+  FestEditingOnly,
+  FestTaskNames,
+  HallTeamManagers,
+  StaffingRow,
+} from "./staffing";
+import { staffingTotals } from "@/lib/hall/statistics";
 import {
   CreatePlan,
   PlanEditor,
@@ -119,8 +120,16 @@ export default async function HallPage({
             },
           },
           tasks: {
-            where: manager ? {} : { members: { some: { id: ownId } } },
+            where: manager
+              ? {}
+              : {
+                  OR: [
+                    { plan: { publishedAt: { not: null } } },
+                    { members: { some: { id: ownId } } },
+                  ],
+                },
             include: {
+              _count: { select: { members: true } },
               members: {
                 where: manager ? {} : { id: ownId },
                 select: memberSelect,
@@ -168,6 +177,7 @@ export default async function HallPage({
             select: {
               teamId: true,
               helperNames: true,
+              requiredHelpers: true,
               startsAt: true,
               endsAt: true,
               _count: { select: { members: true } },
@@ -195,24 +205,14 @@ export default async function HallPage({
     const shifts = allSeason.filter((shift) => shift.teamId === team.id);
     return {
       ...team,
-      count: shifts.length,
-      hours: shifts.reduce(
-        (sum, shift) => sum + (+shift.endsAt - +shift.startsAt) / 3600000,
-        0,
-      ),
-      early: shifts.filter((shift) => wallMinutes(shift.startsAt) < 720).length,
-      late: shifts.filter(
-        (shift) =>
-          dayOf(shift.startsAt) !== dayOf(shift.endsAt) ||
-          wallMinutes(shift.endsAt) >= 1200,
-      ).length,
+      ...staffingTotals(shifts),
       months: [
         ...new Set(shifts.map((shift) => dayOf(shift.startsAt).slice(0, 7))),
       ]
         .sort()
         .map(
           (month) =>
-            `${month.slice(5)}/${month.slice(0, 4)}: ${shifts.filter((shift) => dayOf(shift.startsAt).startsWith(month)).length}`,
+            `${month.slice(5)}/${month.slice(0, 4)}: ${staffingTotals(shifts.filter((shift) => dayOf(shift.startsAt).startsWith(month))).count}`,
         ),
     };
   });
@@ -341,109 +341,145 @@ export default async function HallPage({
                   ))}
                 </div>
               )}
-              {plan.shifts.length > 0 && (
-                <div className="hall-table">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Schicht</th>
-                        <th>Mannschaft</th>
-                        <th>Personen</th>
-                        <th>Status</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {plan.shifts.map((shift) => {
-                        const plays =
-                          manager &&
-                          games.some(
-                            (game) =>
-                              game.teamId === shift.teamId &&
-                              overlap(shift, game),
+              <FestEditMode
+                allowed={
+                  manager ||
+                  plan.shifts.some(
+                    ({ teamId }) =>
+                      teamId !== null && managedTeams.includes(teamId),
+                  )
+                }
+              >
+                {plan.shifts.length > 0 && (
+                  <div className="hall-table">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Schicht</th>
+                          <th>Mannschaft</th>
+                          <th>Personen</th>
+                          <th>Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {plan.shifts.map((shift) => {
+                          const plays =
+                            manager &&
+                            games.some(
+                              (game) =>
+                                game.teamId === shift.teamId &&
+                                overlap(shift, game),
+                            );
+                          return (
+                            <StaffingRow
+                              key={`${shift.id}:${shift.staffingRevision}`}
+                              time={timeSpan(shift.startsAt, shift.endsAt)}
+                              shift={{
+                                id: shift.id,
+                                staffingRevision: shift.staffingRevision,
+                                teamId: shift.teamId,
+                                start: wallValue(shift.startsAt),
+                                end: wallValue(shift.endsAt),
+                                team: shift.team,
+                                requiredHelpers: shift.requiredHelpers,
+                                helperNames: shift.helperNames,
+                                members: shift.members.map((member) => ({
+                                  id: member.id,
+                                  name: fullName(member),
+                                })),
+                              }}
+                              teams={teams}
+                              canChangeTeam={manager}
+                              canEditPeople={
+                                manager ||
+                                (shift.teamId !== null &&
+                                  managedTeams.includes(shift.teamId))
+                              }
+                              notices={[
+                                shift.locked ? "Planung gesperrt" : "",
+                                manager ? shift.conflict : "",
+                                plays ? "Konflikt mit eigenem Spiel" : "",
+                              ]}
+                            />
                           );
-                        return (
-                          <StaffingRow
-                            key={`${shift.id}:${shift.staffingRevision}`}
-                            time={timeSpan(shift.startsAt, shift.endsAt)}
-                            shift={{
-                              id: shift.id,
-                              staffingRevision: shift.staffingRevision,
-                              teamId: shift.teamId,
-                              team: shift.team,
-                              requiredHelpers: shift.requiredHelpers,
-                              helperNames: shift.helperNames,
-                              members: shift.members.map((member) => ({
-                                id: member.id,
-                                name: fullName(member),
-                              })),
-                            }}
-                            teams={teams}
-                            canChangeTeam={manager}
-                            canEditPeople={
-                              manager ||
-                              (shift.teamId !== null &&
-                                managedTeams.includes(shift.teamId))
-                            }
-                            notices={[
-                              shift.locked ? "Planung gesperrt" : "",
-                              manager ? shift.conflict : "",
-                              plays ? "Konflikt mit eigenem Spiel" : "",
-                            ]}
-                          />
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-              <dl className="hall-responsibilities">
-                {(Object.keys(tasks) as (keyof typeof tasks)[]).map((kind) => {
-                  const task = plan.tasks.find((task) => task.kind === kind);
-                  return manager || task ? (
-                    <div key={kind}>
-                      <dt>{tasks[kind]}</dt>
-                      <dd>
-                        {task?.members.map(fullName).join(", ") || "Offen"}
-                      </dd>
-                    </div>
-                  ) : null;
-                })}
-              </dl>
-              {manager && (
-                <>
-                  {!plan.publishedAt && (
-                    <PlanEditor
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                <dl className="hall-responsibilities">
+                  {(Object.keys(tasks) as (keyof typeof tasks)[]).map(
+                    (kind) => {
+                      const task = plan.tasks.find(
+                        (task) => task.kind === kind,
+                      );
+                      return manager || plan.publishedAt || task ? (
+                        <div key={kind}>
+                          <dt>{tasks[kind]}</dt>
+                          <dd>
+                            {[
+                              ...(task?.members.map(fullName) ?? []),
+                              ...(task?.helperNames ?? []),
+                            ].join(", ") ||
+                              (task?._count.members ? "Besetzt" : "Offen")}
+                          </dd>
+                        </div>
+                      ) : null;
+                    },
+                  )}
+                </dl>
+                {manager && (
+                  <FestEditingOnly>
+                    <FestTaskNames
                       key={plan.revision}
-                      teams={teams}
-                      members={choices}
-                      plan={{
-                        id: plan.id,
-                        revision: plan.revision,
-                        title: plan.title,
-                        venue: plan.venue,
-                        notes: plan.notes,
-                        start: wallValue(plan.startsAt),
-                        end: wallValue(plan.endsAt),
-                        tasks: mappedTasks,
-                        shifts: plan.shifts.map((shift) => ({
-                          id: shift.id,
-                          start: wallValue(shift.startsAt),
-                          end: wallValue(shift.endsAt),
-                          people: shift.requiredHelpers,
-                          teamId: shift.teamId,
-                          memberIds: shift.members.map(({ id }) => id),
-                          locked: shift.locked,
-                        })),
+                      id={plan.id}
+                      revision={plan.revision}
+                      initial={{
+                        PURCHASE:
+                          plan.tasks.find(({ kind }) => kind === "PURCHASE")
+                            ?.helperNames ?? [],
+                        OPEN:
+                          plan.tasks.find(({ kind }) => kind === "OPEN")
+                            ?.helperNames ?? [],
+                        CLOSE:
+                          plan.tasks.find(({ kind }) => kind === "CLOSE")
+                            ?.helperNames ?? [],
                       }}
                     />
-                  )}
-                  <Publish
-                    id={plan.id}
-                    revision={plan.revision}
-                    published={!!plan.publishedAt}
-                  />
-                </>
-              )}
+                    {!plan.publishedAt && (
+                      <PlanEditor
+                        key={plan.revision}
+                        teams={teams}
+                        members={choices}
+                        plan={{
+                          id: plan.id,
+                          revision: plan.revision,
+                          title: plan.title,
+                          venue: plan.venue,
+                          notes: plan.notes,
+                          start: wallValue(plan.startsAt),
+                          end: wallValue(plan.endsAt),
+                          tasks: mappedTasks,
+                          shifts: plan.shifts.map((shift) => ({
+                            id: shift.id,
+                            start: wallValue(shift.startsAt),
+                            end: wallValue(shift.endsAt),
+                            people: shift.requiredHelpers,
+                            teamId: shift.teamId,
+                            memberIds: shift.members.map(({ id }) => id),
+                            locked: shift.locked,
+                          })),
+                        }}
+                      />
+                    )}
+                    <Publish
+                      id={plan.id}
+                      revision={plan.revision}
+                      published={!!plan.publishedAt}
+                    />
+                  </FestEditingOnly>
+                )}
+              </FestEditMode>
             </article>
           );
         })}
@@ -465,9 +501,8 @@ export default async function HallPage({
             Schichten ohne Einteilung
           </p>
           <p className="form-note">
-            Einschließlich Entwürfen. Frühdienst beginnt vor 12 Uhr, Spätdienst
-            endet ab 20 Uhr. Die Stunden beziehen sich auf Schichtdauer je
-            Mannschaft.
+            Geplante Plätze einschließlich Entwürfen und offener Plätze.
+            Gesamtstunden sind die Summe aus Plätzen × Schichtdauer.
           </p>
           <div className="hall-table">
             <table>
@@ -475,20 +510,16 @@ export default async function HallPage({
                 <tr>
                   <th>Mannschaft</th>
                   <th>Dienste</th>
-                  <th>Stunden</th>
-                  <th>Früh</th>
-                  <th>Spät</th>
+                  <th>Gesamtstunden</th>
                   <th>Monate</th>
                 </tr>
               </thead>
               <tbody>
-                {stat.map(({ id, name, count, hours, early, late, months }) => (
+                {stat.map(({ id, name, count, hours, months }) => (
                   <tr key={id}>
                     <th>{name}</th>
                     <td data-label="Dienste">{count}</td>
-                    <td data-label="Stunden">{amount.format(hours)}</td>
-                    <td data-label="Früh">{early}</td>
-                    <td data-label="Spät">{late}</td>
+                    <td data-label="Gesamtstunden">{amount.format(hours)}</td>
                     <td data-label="Monate">{months.join(" · ") || "–"}</td>
                   </tr>
                 ))}

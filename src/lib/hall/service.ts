@@ -11,6 +11,7 @@ import {
   schedule,
   splitShifts,
   wall,
+  type Match,
   type Options,
   type Slot,
 } from "./planner";
@@ -19,6 +20,20 @@ const id = z.string().min(1).max(100);
 const name = z.string().trim().min(1).max(160);
 const people = z.number().int().min(1).max(100);
 const memberIds = z.array(id).max(100);
+const helperName = z
+  .string()
+  .trim()
+  .max(160)
+  .regex(/^[^\p{Cc}]*$/u);
+export const hallTaskNamesSchema = z.object({
+  id,
+  revision: z.number().int().nonnegative(),
+  names: z.object({
+    PURCHASE: z.array(helperName).max(100),
+    OPEN: z.array(helperName).max(100),
+    CLOSE: z.array(helperName).max(100),
+  }),
+});
 const interval = { start: wall, end: wall };
 export const createPlanSchema = z.object({
   title: name,
@@ -58,21 +73,14 @@ export const shiftStaffingSchema = z.discriminatedUnion("kind", [
       kind: z.literal("team"),
       ...shiftIdentity,
       teamId: id.nullable(),
+      times: z.object(interval).strict().optional(),
     })
     .strict(),
   z
     .object({
       kind: z.literal("people"),
       ...shiftIdentity,
-      names: z
-        .array(
-          z
-            .string()
-            .trim()
-            .max(160)
-            .regex(/^[^\p{Cc}]*$/u),
-        )
-        .max(100),
+      names: z.array(helperName).max(100),
       removedMemberIds: memberIds,
     })
     .strict(),
@@ -167,6 +175,34 @@ export function saveHallManagers(
   });
 }
 
+export async function saveHallTaskNames(
+  tx: Tx,
+  input: z.infer<typeof hallTaskNamesSchema>,
+) {
+  const plan = await tx.hallPlan.findUnique({
+    where: { id: input.id },
+    select: { revision: true },
+  });
+  if (plan?.revision !== input.revision)
+    throw new HallError(
+      "Der Plan wurde zwischenzeitlich geändert. Bitte neu laden.",
+    );
+
+  for (const kind of ["PURCHASE", "OPEN", "CLOSE"] as const) {
+    const helperNames = input.names[kind].filter(Boolean);
+    await tx.hallTask.upsert({
+      where: { planId_kind: { planId: input.id, kind } },
+      create: { planId: input.id, kind, helperNames },
+      update: { helperNames },
+    });
+  }
+  await tx.hallPlan.update({
+    where: { id: input.id },
+    data: { revision: { increment: 1 } },
+  });
+  return { id: input.id };
+}
+
 export function saveShiftStaffing(
   actorId: string,
   input: z.infer<typeof shiftStaffingSchema>,
@@ -179,7 +215,16 @@ export function saveShiftStaffing(
       );
     const shift = await tx.hallShift.findUnique({
       where: { id: input.id },
-      include: { plan: true, members: { select: { id: true } } },
+      include: {
+        plan: true,
+        members: {
+          select: {
+            id: true,
+            active: true,
+            teams: { select: { teamId: true } },
+          },
+        },
+      },
     });
     if (
       !shift ||
@@ -201,34 +246,54 @@ export function saveShiftStaffing(
 
     let data: Prisma.HallShiftUpdateInput;
     if (input.kind === "team") {
-      if (shift.teamId === input.teamId) return;
-      if (input.teamId) {
-        if (
-          !(await tx.team.findUnique({
-            where: { id: input.teamId },
-            select: { id: true },
-          }))
-        )
-          throw new HallError("Die Mannschaft ist nicht mehr vorhanden.");
+      const times = input.times
+        ? dates(input.times.start, input.times.end)
+        : null;
+      const moved =
+        times !== null &&
+        (+times.startsAt !== +shift.startsAt ||
+          +times.endsAt !== +shift.endsAt);
+      if (!moved && shift.teamId === input.teamId) return;
+      if (
+        times &&
+        (times.startsAt < shift.plan.startsAt ||
+          times.endsAt > shift.plan.endsAt)
+      )
+        throw new HallError("Die Schicht muss im Bewirtungszeitraum liegen.");
+      const proposed = { ...shift, ...(times ?? {}) };
+      if (
+        input.teamId &&
+        input.teamId !== shift.teamId &&
+        !(await tx.team.findUnique({
+          where: { id: input.teamId },
+          select: { id: true },
+        }))
+      )
+        throw new HallError("Die Mannschaft ist nicht mehr vorhanden.");
+
+      if (input.teamId || (moved && shift.members.length)) {
         const config = planOptions(shift.plan);
         const { lt, gte } = windowFor(config);
         const window = {
-          gte: new Date(Math.min(+gte, +shift.startsAt - 3 * 86400000)),
-          lt: new Date(Math.max(+lt, +shift.endsAt + 4 * 86400000)),
+          gte: new Date(Math.min(+gte, +proposed.startsAt - 3 * 86400000)),
+          lt: new Date(Math.max(+lt, +proposed.endsAt + 4 * 86400000)),
         };
-        const [matches, fixed] = await Promise.all([
-          tx.hallMatch.findMany({ where: { startsAt: window } }),
-          fixedSlots(tx, window, [shift.id]),
-        ]);
-        const conflict = schedule(
-          [{ ...shift, teamId: null, locked: false }],
-          matches,
-          { ...config, teamIds: [input.teamId] },
-          fixed,
-        )[0]?.conflict;
-        if (conflict) throw new HallError(conflict);
+        const matches = await tx.hallMatch.findMany({
+          where: { startsAt: window },
+        });
+        if (input.teamId) {
+          const conflict = schedule(
+            [{ ...proposed, teamId: null, locked: false }],
+            matches,
+            { ...config, teamIds: [input.teamId] },
+            await fixedSlots(tx, window, [shift.id]),
+          )[0]?.conflict;
+          if (conflict) throw new HallError(conflict);
+        }
+        if (moved) await checkShiftMembers(tx, proposed, config, matches);
       }
       data = {
+        ...(moved ? times : {}),
         team: input.teamId
           ? { connect: { id: input.teamId } }
           : { disconnect: true },
@@ -270,7 +335,7 @@ export function saveShiftStaffing(
     await tx.auditLog.create({
       data: {
         actorId,
-        action: input.kind === "team" ? "HALL_SHIFT_TEAM" : "HALL_SHIFT_PEOPLE",
+        action: input.kind === "team" ? "HALL_SHIFT_EDIT" : "HALL_SHIFT_PEOPLE",
         entityType: "HallShift",
         entityId: shift.id,
       },
@@ -735,6 +800,55 @@ function planOptions(plan: {
       };
 }
 
+async function checkShiftMembers(
+  tx: Tx,
+  shift: Slot & {
+    members: { id: string; active: boolean; teams: { teamId: string }[] }[];
+  },
+  config: Options,
+  matches: Match[],
+  label = "Schicht",
+) {
+  for (const member of shift.members) {
+    if (!member.active || config.blockedMemberIds.includes(member.id))
+      throw new HallError(`${label}: Inaktives oder gesperrtes Mitglied.`);
+    const time = {
+      startsAt: { lt: shift.endsAt },
+      endsAt: { gt: shift.startsAt },
+    };
+    const [regular, other, unavailable] = await Promise.all([
+      tx.dutyAssignment.findFirst({
+        where: {
+          memberId: member.id,
+          shift: { ...time, status: { not: "CANCELLED" } },
+        },
+      }),
+      tx.hallShift.findFirst({
+        where: {
+          ...time,
+          id: { not: shift.id },
+          members: { some: { id: member.id } },
+        },
+      }),
+      tx.availability.findFirst({
+        where: { ...time, memberId: member.id, available: false },
+      }),
+    ]);
+    const plays = matches.some(
+      (match) =>
+        member.teams.some(({ teamId }) => teamId === match.teamId) &&
+        overlap(
+          shift,
+          match,
+          config.matchBefore + (match.ownHome ? 0 : config.travel),
+          config.matchAfter + (match.ownHome ? 0 : config.travel),
+        ),
+    );
+    if (regular || other || unavailable || plays)
+      throw new HallError(`${label}: Ein Mitglied hat einen Zeitkonflikt.`);
+  }
+}
+
 export async function publishPlan(
   tx: Tx,
   id: string,
@@ -800,44 +914,7 @@ export async function publishPlan(
         const conflict = checkTeam(shift.teamId);
         if (conflict) throw new HallError(`${label}: ${conflict}.`);
       }
-      for (const member of shift.members) {
-        if (!member.active || blocked.has(member.id))
-          throw new HallError(`${label}: Inaktives oder gesperrtes Mitglied.`);
-        const time = {
-          startsAt: { lt: shift.endsAt },
-          endsAt: { gt: shift.startsAt },
-        };
-        const [regular, other, unavailable] = await Promise.all([
-          tx.dutyAssignment.findFirst({
-            where: {
-              memberId: member.id,
-              shift: { ...time, status: { not: "CANCELLED" } },
-            },
-          }),
-          tx.hallShift.findFirst({
-            where: {
-              ...time,
-              id: { not: shift.id },
-              members: { some: { id: member.id } },
-            },
-          }),
-          tx.availability.findFirst({
-            where: { ...time, memberId: member.id, available: false },
-          }),
-        ]);
-        const plays = matches.some(
-          (match) =>
-            member.teams.some(({ teamId }) => teamId === match.teamId) &&
-            overlap(
-              shift,
-              match,
-              config.matchBefore + (match.ownHome ? 0 : config.travel),
-              config.matchAfter + (match.ownHome ? 0 : config.travel),
-            ),
-        );
-        if (regular || other || unavailable || plays)
-          throw new HallError(`${label}: Ein Mitglied hat einen Zeitkonflikt.`);
-      }
+      await checkShiftMembers(tx, shift, config, matches, label);
     }
   }
   await tx.hallPlan.update({

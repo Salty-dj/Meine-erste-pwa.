@@ -13,6 +13,8 @@ import {
   generateSeason,
   HallError,
   hallManagersSchema,
+  hallTaskNamesSchema,
+  saveHallTaskNames,
   hallWrite,
   importMatches,
   importSchema,
@@ -32,6 +34,7 @@ const publishSchema = z.object({
 const command = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("create"), data: createPlanSchema }),
   z.object({ kind: z.literal("edit"), data: editPlanSchema }),
+  z.object({ kind: z.literal("tasks"), data: hallTaskNamesSchema }),
   z.object({ kind: z.literal("publish"), data: publishSchema }),
   z.object({ kind: z.literal("import"), data: importSchema }),
   z.object({ kind: z.literal("generate"), data: optionsSchema }),
@@ -51,7 +54,7 @@ export async function updateHallStaffing(input: unknown) {
     return {
       ok: false as const,
       error:
-        error instanceof HallError
+        error instanceof HallError || error instanceof DutyError
           ? error.message
           : "Die Schicht konnte nicht gespeichert werden.",
     };
@@ -100,6 +103,8 @@ export async function runHallCommand(input: unknown) {
             return newPlan(tx, value.data);
           case "edit":
             return savePlan(tx, value.data);
+          case "tasks":
+            return saveHallTaskNames(tx, value.data);
           case "publish":
             return publishPlan(
               tx,

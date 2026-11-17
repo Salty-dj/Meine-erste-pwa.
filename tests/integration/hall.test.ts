@@ -10,6 +10,7 @@ import {
   publishPlan,
   savePlan,
   saveHallManagers,
+  saveHallTaskNames,
   saveShiftStaffing,
 } from "../../src/lib/hall/service";
 import { wallValue, type Options } from "../../src/lib/hall/planner";
@@ -356,5 +357,67 @@ test("staffing is scoped to team managers and editable in place after publicatio
   });
   await expect(editPeople(second.id, later.id, 1, [])).rejects.toThrow(
     "Berechtigung",
+  );
+});
+
+test("a published plan keeps its assignments when time and task names are updated", async () => {
+  const plan = await hallWrite(hallId, (tx) =>
+    newPlan(tx, {
+      start: "2085-08-15T09:00",
+      end: "2085-08-15T13:00",
+      duration: 120,
+      title: "Veröffentlichtes Fest",
+      venue: key,
+      notes: "",
+      people: 3,
+    }),
+  );
+  await db.hallTask.create({
+    data: {
+      planId: plan.id,
+      kind: "PURCHASE",
+      members: { connect: { id: memberId } },
+    },
+  });
+  await hallWrite(hallId, (tx) => publishPlan(tx, plan.id, 0, true));
+  const [first, second] = await db.hallShift.findMany({
+    where: { planId: plan.id },
+    orderBy: { startsAt: "asc" },
+  });
+  await saveShiftStaffing(hallId, {
+    kind: "team",
+    id: first.id,
+    revision: 0,
+    teamId: ownTeam,
+    times: { start: "2085-08-15T09:30", end: "2085-08-15T11:00" },
+  });
+  await hallWrite(hallId, (tx) =>
+    saveHallTaskNames(tx, {
+      id: plan.id,
+      revision: 2,
+      names: { PURCHASE: ["Kim"], OPEN: ["Alex"], CLOSE: ["Jan"] },
+    }),
+  );
+  const current = await db.hallPlan.findUniqueOrThrow({
+    where: { id: plan.id },
+    include: {
+      shifts: { orderBy: { startsAt: "asc" } },
+      tasks: { include: { members: true } },
+    },
+  });
+  expect(current.publishedAt).not.toBeNull();
+  expect(wallValue(current.shifts[0].startsAt)).toBe("2085-08-15T09:30");
+  expect(current.shifts[0].teamId).toBe(ownTeam);
+  expect(current.shifts[1]).toEqual(second);
+  expect(current.tasks).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        kind: "PURCHASE",
+        helperNames: ["Kim"],
+        members: [expect.objectContaining({ id: memberId })],
+      }),
+      expect.objectContaining({ kind: "OPEN", helperNames: ["Alex"] }),
+      expect.objectContaining({ kind: "CLOSE", helperNames: ["Jan"] }),
+    ]),
   );
 });

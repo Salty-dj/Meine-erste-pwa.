@@ -1,6 +1,8 @@
 import { beforeEach, expect, test, vi } from "vitest";
+import { staffingTotals } from "../../src/lib/hall/statistics";
 import {
   hallWrite,
+  saveHallTaskNames,
   saveHallManagers,
   saveShiftStaffing,
   shiftStaffingSchema,
@@ -12,8 +14,16 @@ vi.mock("../../src/lib/db", () => ({ db }));
 const tx = {
   $executeRaw: vi.fn(),
   user: { findUnique: vi.fn() },
-  hallShift: { findUnique: vi.fn(), update: vi.fn(), findMany: vi.fn() },
-  hallPlan: { update: vi.fn() },
+  hallShift: {
+    findUnique: vi.fn(),
+    update: vi.fn(),
+    findMany: vi.fn(),
+    findFirst: vi.fn(),
+  },
+  dutyAssignment: { findFirst: vi.fn() },
+  availability: { findFirst: vi.fn() },
+  hallPlan: { update: vi.fn(), findUnique: vi.fn() },
+  hallTask: { upsert: vi.fn() },
   hallTeamManager: {
     findFirst: vi.fn(),
     findMany: vi.fn(),
@@ -211,4 +221,94 @@ test("coordinators can add several team managers and stale selections cannot ove
     data: [{ teamId: "team", memberId: "another" }],
   });
   expect(tx.hallTeamManager.deleteMany).not.toHaveBeenCalled();
+});
+
+test("statistics count all planned places and person-hours", () => {
+  const startsAt = new Date("2026-11-20T18:00:00Z");
+  expect(
+    staffingTotals([
+      { startsAt, endsAt: new Date(+startsAt + 7200000), requiredHelpers: 3 },
+      { startsAt, endsAt: new Date(+startsAt + 3600000), requiredHelpers: 2 },
+    ]),
+  ).toEqual({ count: 5, hours: 8 });
+  expect(staffingTotals([])).toEqual({ count: 0, hours: 0 });
+});
+
+test("a team manager cannot change shift times or event tasks", async () => {
+  await expect(
+    saveShiftStaffing("member", {
+      ...team,
+      times: { start: "2026-11-20T18:00", end: "2026-11-20T19:00" },
+    }),
+  ).rejects.toThrow("dürfen");
+  await expect(
+    hallWrite("member", (tx) =>
+      saveHallTaskNames(tx, {
+        id: "plan",
+        revision: 0,
+        names: { PURCHASE: ["Kim"], OPEN: [], CLOSE: [] },
+      }),
+    ),
+  ).rejects.toThrow("Zugriff");
+  expect(tx.hallTask.upsert).not.toHaveBeenCalled();
+});
+
+test("rejects a shift moved outside the event period", async () => {
+  actor("HALL_CATERING");
+  tx.hallShift.findUnique.mockResolvedValue({
+    ...shift,
+    plan: { ...shift.plan, startsAt: shift.startsAt },
+  });
+  await expect(
+    saveShiftStaffing("hall", {
+      ...team,
+      times: { start: "2026-11-20T17:00", end: "2026-11-20T18:00" },
+    }),
+  ).rejects.toThrow("Bewirtungszeitraum");
+  expect(tx.hallShift.update).not.toHaveBeenCalled();
+});
+
+test("task names do not overwrite linked members and stale writes are rejected", async () => {
+  actor("HALL_CATERING");
+  tx.hallPlan.findUnique.mockResolvedValue({ revision: 1 });
+  const names = { PURCHASE: ["Kim", "", "Jan"], OPEN: ["Alex"], CLOSE: [] };
+  await expect(
+    hallWrite("hall", (tx) =>
+      saveHallTaskNames(tx, { id: "plan", revision: 0, names }),
+    ),
+  ).rejects.toThrow("zwischenzeitlich");
+  await hallWrite("hall", (tx) =>
+    saveHallTaskNames(tx, { id: "plan", revision: 1, names }),
+  );
+  expect(tx.hallTask.upsert).toHaveBeenCalledTimes(3);
+  expect(tx.hallTask.upsert).toHaveBeenCalledWith({
+    where: { planId_kind: { planId: "plan", kind: "PURCHASE" } },
+    update: { helperNames: ["Kim", "Jan"] },
+    create: { planId: "plan", kind: "PURCHASE", helperNames: ["Kim", "Jan"] },
+  });
+});
+
+test("moving a staffed shift preserves the people and checks their availability", async () => {
+  actor("HALL_CATERING");
+  tx.hallShift.findUnique.mockResolvedValue({
+    ...shift,
+    members: [{ id: "linked", active: true, teams: [] }],
+    plan: { ...shift.plan, startsAt: shift.startsAt },
+  });
+  const change = {
+    ...team,
+    teamId: "team",
+    times: { start: "2026-11-20T19:30", end: "2026-11-20T21:00" },
+  };
+  tx.availability.findFirst.mockResolvedValueOnce({ id: "blocked" });
+  await expect(saveShiftStaffing("hall", change)).rejects.toThrow(
+    "Zeitkonflikt",
+  );
+  expect(tx.hallShift.update).not.toHaveBeenCalled();
+  await saveShiftStaffing("hall", change);
+  const update = tx.hallShift.update.mock.calls[0][0].data;
+  expect(update.startsAt).toEqual(new Date("2026-11-20T18:30Z"));
+  expect(update.endsAt).toEqual(shift.endsAt);
+  expect(update).not.toHaveProperty("members");
+  expect(update).not.toHaveProperty("helperNames");
 });
