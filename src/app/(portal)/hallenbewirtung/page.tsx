@@ -146,12 +146,15 @@ export default async function HallPage({
           },
         },
       }),
-      manager
+      viewFullPlans
         ? db.team.findMany({
             select: {
               id: true,
               name: true,
-              hallManagers: { select: { memberId: true } },
+              hallManagers: {
+                where: manager ? {} : { memberId: ownId },
+                select: { memberId: true },
+              },
             },
             orderBy: { name: "asc" },
           })
@@ -179,7 +182,7 @@ export default async function HallPage({
             orderBy: { name: "asc" },
           })
         : [],
-      manager
+      viewFullPlans
         ? db.hallShift.findMany({
             where: { plan: { day: { gte: from, lte: to } } },
             select: {
@@ -209,7 +212,8 @@ export default async function HallPage({
       id: member.id,
       name: fullName(member),
     }));
-  const stat = teams.map((team) => {
+  const teamChoices = teams.map(({ id, name }) => ({ id, name }));
+  const stat = teamChoices.map((team) => {
     const shifts = allSeason.filter((shift) => shift.teamId === team.id);
     return {
       ...team,
@@ -413,7 +417,7 @@ export default async function HallPage({
                       <tbody>
                         {plan.shifts.map((shift) => {
                           const plays =
-                            manager &&
+                            viewFullPlans &&
                             games.some(
                               (game) =>
                                 game.teamId === shift.teamId &&
@@ -440,7 +444,7 @@ export default async function HallPage({
                                   name: fullName(member),
                                 })),
                               }}
-                              teams={teams}
+                              teams={manager ? teamChoices : []}
                               canChangeTeam={manager}
                               canEditPeople={
                                 manager ||
@@ -449,7 +453,7 @@ export default async function HallPage({
                               }
                               notices={[
                                 shift.locked ? "Planung gesperrt" : "",
-                                manager ? shift.conflict : "",
+                                viewFullPlans ? shift.conflict : "",
                                 plays ? "Konflikt mit eigenem Spiel" : "",
                               ]}
                             />
@@ -500,7 +504,7 @@ export default async function HallPage({
           );
         })}
       </section>
-      {manager && (
+      {viewFullPlans && (
         <section className="panel padded stack">
           <h2>
             Verteilung {season}/{season + 1}
