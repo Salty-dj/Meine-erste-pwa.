@@ -1,34 +1,43 @@
 "use client";
 
-import {
-  createContext,
-  useContext,
-  useId,
-  useState,
-  type ReactNode,
-} from "react";
+import { createContext, useContext, useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
-import { updateHallManagers, updateHallStaffing } from "./actions";
+import { updateFest, updateHallManagers } from "./actions";
 import {
   Notice,
   PersonCheck,
   TeamOptions,
   useHall,
-  send,
   responsibility,
   type Choice,
 } from "./editor";
 
 const FestEditing = createContext(false);
 
+type TaskKind = keyof typeof responsibility;
+const taskKinds = Object.keys(responsibility) as TaskKind[];
+const fieldName = (id: string, field: string) => `${id}:${field}`;
+
 export function FestEditMode({
   allowed,
+  id,
+  revision,
+  day,
+  shiftIds,
+  extra,
   children,
 }: {
   allowed: boolean;
+  id: string;
+  revision: number;
+  day?: string;
+  shiftIds: string[];
+  extra?: ReactNode;
   children: ReactNode;
 }) {
-  const [editing, setEditing] = useState(false);
+  const [editingRevision, setEditingRevision] = useState<number | null>(null);
+  const editing = editingRevision !== null;
+  const { run, pending, message } = useHall();
   return (
     <FestEditing.Provider value={allowed && editing}>
       {allowed && (
@@ -37,85 +46,117 @@ export function FestEditMode({
           type="button"
           variant="outline"
           aria-pressed={editing}
-          onClick={() => setEditing(!editing)}
+          disabled={pending}
+          onClick={() => setEditingRevision(editing ? null : revision)}
         >
           {editing ? "Bearbeitung schließen" : "Bearbeiten"}
         </Button>
       )}
-      {children}
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (editingRevision === null || pending) return;
+          const fields = new FormData(event.currentTarget);
+          const text = (name: string) => String(fields.get(name) ?? "");
+          const shifts = shiftIds.flatMap((id) => {
+            const schedule = fields.has(fieldName(id, "start"))
+              ? {
+                  start: text(fieldName(id, "start")),
+                  end: text(fieldName(id, "end")),
+                  teamId: text(fieldName(id, "team")) || null,
+                }
+              : undefined;
+            const people = fields.has(fieldName(id, "people"))
+              ? {
+                  names: fields.getAll(fieldName(id, "name")).map(String),
+                  removedMemberIds: fields
+                    .getAll(fieldName(id, "remove"))
+                    .map(String),
+                }
+              : undefined;
+            return schedule || people ? [{ id, schedule, people }] : [];
+          });
+          const tasks = fields.has("PURCHASE")
+            ? Object.fromEntries(
+                taskKinds.map((kind) => [
+                  kind,
+                  text(kind)
+                    .split(/\r?\n/)
+                    .map((name) => name.trim())
+                    .filter(Boolean),
+                ]),
+              )
+            : undefined;
+          run(async () => {
+            const response = await updateFest({
+              id,
+              revision: editingRevision,
+              shifts,
+              day: fields.has("day") ? text("day") : undefined,
+              tasks,
+            });
+            if (!response.ok) throw new Error(response.error);
+            setEditingRevision(null);
+            return "Fest gespeichert.";
+          });
+        }}
+      >
+        <fieldset disabled={pending} className="hall-fest-fields">
+          {editing && day !== undefined && (
+            <label className="hall-editor hall-fest-date">
+              Festdatum
+              <input type="date" name="day" required defaultValue={day} />
+            </label>
+          )}
+          {children}
+          {allowed && editing && (
+            <Button type="submit" className="hall-editor">
+              {pending ? "Speichert …" : "Alle Änderungen speichern"}
+            </Button>
+          )}
+        </fieldset>
+        <Notice message={message} />
+      </form>
+      {!editing && extra}
     </FestEditing.Provider>
   );
 }
 
-export function FestEditingOnly({ children }: { children: ReactNode }) {
-  return useContext(FestEditing) ? (
-    <div className="stack hall-editor">{children}</div>
-  ) : null;
-}
-
 export function FestTaskNames({
-  id,
-  revision,
   initial,
 }: {
-  id: string;
-  revision: number;
-  initial: Record<keyof typeof responsibility, string[]>;
+  initial: Record<TaskKind, string[]>;
 }) {
-  const [names, setNames] = useState({
-    PURCHASE: initial.PURCHASE.join("\n"),
-    OPEN: initial.OPEN.join("\n"),
-    CLOSE: initial.CLOSE.join("\n"),
-  });
-  const { run, pending, message } = useHall();
+  if (!useContext(FestEditing)) return null;
   return (
-    <form
-      className="hall-staffing-form"
-      onSubmit={(event) => {
-        event.preventDefault();
-        const split = (value: string) =>
-          value
-            .split(/\r?\n/)
-            .map((name) => name.trim())
-            .filter(Boolean);
-        run(async () => {
-          await send("tasks", {
-            id,
-            revision,
-            names: {
-              PURCHASE: split(names.PURCHASE),
-              OPEN: split(names.OPEN),
-              CLOSE: split(names.CLOSE),
-            },
-          });
-          return "Verantwortliche gespeichert.";
-        });
-      }}
-    >
-      <fieldset disabled={pending}>
-        <legend>Verantwortliche eintragen</legend>
-        {(Object.keys(responsibility) as (keyof typeof responsibility)[]).map(
-          (kind) => (
-            <label key={kind}>
-              {responsibility[kind]}
-              <textarea
-                rows={2}
-                maxLength={16100}
-                value={names[kind]}
-                placeholder="Ein Name pro Zeile"
-                onChange={(event) =>
-                  setNames({ ...names, [kind]: event.target.value })
-                }
-              />
-            </label>
-          ),
-        )}
-        <Button disabled={pending}>Verantwortliche speichern</Button>
-      </fieldset>
-      <Notice message={message} />
-    </form>
+    <div className="hall-editor hall-staffing-form">
+      <h4>Verantwortliche eintragen</h4>
+      {taskKinds.map((kind) => (
+        <label key={kind}>
+          {responsibility[kind]}
+          <textarea
+            name={kind}
+            rows={2}
+            maxLength={16100}
+            defaultValue={initial[kind].join("\n")}
+            placeholder="Ein Name pro Zeile"
+          />
+        </label>
+      ))}
+    </div>
   );
 }
+
+type StaffingShift = {
+  id: string;
+  teamId: string | null;
+  start: string;
+  end: string;
+  team: { name: string } | null;
+  requiredHelpers: number;
+  helperNames: string[];
+  members: Choice[];
+};
 
 export function StaffingRow({
   shift,
@@ -125,17 +166,7 @@ export function StaffingRow({
   canEditPeople,
   notices,
 }: {
-  shift: {
-    id: string;
-    staffingRevision: number;
-    teamId: string | null;
-    start: string;
-    end: string;
-    team: { name: string } | null;
-    requiredHelpers: number;
-    helperNames: string[];
-    members: Choice[];
-  };
+  shift: StaffingShift;
   time: string;
   teams: Choice[];
   canChangeTeam: boolean;
@@ -143,65 +174,36 @@ export function StaffingRow({
   notices: string[];
 }) {
   const editing = useContext(FestEditing);
-  const shiftForm = useId();
-  const [teamId, setTeamId] = useState(shift.teamId ?? "");
-  const [start, setStart] = useState(shift.start);
-  const [end, setEnd] = useState(shift.end);
-  const [names, setNames] = useState(shift.helperNames);
-  const [removed, setRemoved] = useState<string[]>([]);
-  const { run, pending, message } = useHall();
-  const linked = shift.members.filter(({ id }) => !removed.includes(id));
-  const freeFields = Math.max(0, shift.requiredHelpers - linked.length);
   const listed = [
     ...shift.members.map(({ name }) => name),
     ...shift.helperNames.filter(Boolean),
   ];
   const open = Math.max(0, shift.requiredHelpers - listed.length);
-  const identity = { id: shift.id, revision: shift.staffingRevision };
-
   return (
     <tr>
       <td data-label="Schicht">
         {time}
         {editing && canChangeTeam && (
-          <form
-            id={shiftForm}
-            className="hall-editor hall-staffing-form"
-            onSubmit={(event) => {
-              event.preventDefault();
-              run(async () => {
-                const response = await updateHallStaffing({
-                  kind: "team",
-                  ...identity,
-                  teamId: teamId || null,
-                  times: { start, end },
-                });
-                if (!response.ok) throw new Error(response.error);
-                return "Schicht gespeichert.";
-              });
-            }}
-          >
+          <div className="hall-editor hall-staffing-form">
             <label>
               Beginn
               <input
-                type="datetime-local"
+                type="time"
+                name={fieldName(shift.id, "start")}
                 required
-                disabled={pending}
-                value={start}
-                onChange={(event) => setStart(event.target.value)}
+                defaultValue={shift.start}
               />
             </label>
             <label>
               Ende
               <input
-                type="datetime-local"
+                type="time"
+                name={fieldName(shift.id, "end")}
                 required
-                disabled={pending}
-                value={end}
-                onChange={(event) => setEnd(event.target.value)}
+                defaultValue={shift.end}
               />
             </label>
-          </form>
+          </div>
         )}
       </td>
       <td data-label="Mannschaft">
@@ -212,22 +214,13 @@ export function StaffingRow({
             </span>
             <div className="hall-editor hall-staffing-form">
               <select
-                form={shiftForm}
+                name={fieldName(shift.id, "team")}
                 aria-label={`Mannschaft für ${time}`}
-                value={teamId}
-                disabled={pending}
-                onChange={(event) => setTeamId(event.target.value)}
+                defaultValue={shift.teamId ?? ""}
               >
                 <option value="">Keine Mannschaft</option>
                 <TeamOptions options={teams} />
               </select>
-              {(teamId !== (shift.teamId ?? "") ||
-                start !== shift.start ||
-                end !== shift.end) && (
-                <Button form={shiftForm} disabled={pending}>
-                  Schicht speichern
-                </Button>
-              )}
             </div>
           </>
         ) : (
@@ -241,80 +234,7 @@ export function StaffingRow({
         <span>
           {listed.length}/{shift.requiredHelpers}
         </span>
-        {editing && canEditPeople && (
-          <details className="hall-editor">
-            <summary>Personen bearbeiten</summary>
-            <form
-              className="hall-staffing-form"
-              onSubmit={(event) => {
-                event.preventDefault();
-                run(async () => {
-                  const response = await updateHallStaffing({
-                    kind: "people",
-                    ...identity,
-                    names: names.slice(0, freeFields),
-                    removedMemberIds: removed,
-                  });
-                  if (!response.ok) throw new Error(response.error);
-                  return "Personen gespeichert.";
-                });
-              }}
-            >
-              <fieldset disabled={pending}>
-                {shift.members.map(({ id, name }, index) => (
-                  <label className="hall-staffing-linked" key={id}>
-                    <input
-                      type="checkbox"
-                      checked={removed.includes(id)}
-                      onChange={(event) =>
-                        setRemoved(
-                          event.target.checked
-                            ? [...removed, id]
-                            : removed.filter((value) => value !== id),
-                        )
-                      }
-                    />
-                    {name} entfernen (Mitglied, Person {index + 1})
-                  </label>
-                ))}
-                {Array.from({ length: freeFields }, (_, index) => (
-                  <label key={index}>
-                    Person {linked.length + index + 1}
-                    <input
-                      type="text"
-                      autoComplete="off"
-                      maxLength={160}
-                      placeholder="Offener Platz"
-                      value={names[index] ?? ""}
-                      onChange={(event) => {
-                        const value = event.target.value;
-                        setNames((current) =>
-                          Array.from(
-                            { length: Math.max(current.length, index + 1) },
-                            (_, i) =>
-                              i === index ? value : (current[i] ?? ""),
-                          ),
-                        );
-                      }}
-                    />
-                  </label>
-                ))}
-                <p className="form-note" aria-live="polite">
-                  {linked.length +
-                    names.slice(0, freeFields).filter((name) => name.trim())
-                      .length}
-                  /{shift.requiredHelpers} Personen eingetragen
-                </p>
-                <Button disabled={pending}>Personen speichern</Button>
-              </fieldset>
-            </form>
-          </details>
-        )}
-        {editing && (
-          <div className="hall-editor">
-            <Notice message={message} />
-          </div>
-        )}
+        {editing && canEditPeople && <ShiftPeopleFields shift={shift} />}
       </td>
       <td data-label="Status">
         {[
@@ -327,6 +247,66 @@ export function StaffingRow({
           .join(" · ")}
       </td>
     </tr>
+  );
+}
+
+function ShiftPeopleFields({ shift }: { shift: StaffingShift }) {
+  const [names, setNames] = useState(shift.helperNames);
+  const [removed, setRemoved] = useState<string[]>([]);
+  const linkedCount = shift.members.length - removed.length;
+  const freeFields = Math.max(0, shift.requiredHelpers - linkedCount);
+  return (
+    <details className="hall-editor">
+      <summary>Personen bearbeiten</summary>
+      <fieldset className="hall-staffing-form">
+        <input type="hidden" name={fieldName(shift.id, "people")} value="1" />
+        {shift.members.map(({ id, name }, index) => (
+          <label className="hall-staffing-linked" key={id}>
+            <input
+              type="checkbox"
+              name={fieldName(shift.id, "remove")}
+              value={id}
+              checked={removed.includes(id)}
+              onChange={(event) =>
+                setRemoved(
+                  event.target.checked
+                    ? [...removed, id]
+                    : removed.filter((value) => value !== id),
+                )
+              }
+            />
+            {name} entfernen (Mitglied, Person {index + 1})
+          </label>
+        ))}
+        {Array.from({ length: freeFields }, (_, index) => (
+          <label key={index}>
+            Person {linkedCount + index + 1}
+            <input
+              type="text"
+              name={fieldName(shift.id, "name")}
+              autoComplete="off"
+              maxLength={160}
+              placeholder="Offener Platz"
+              value={names[index] ?? ""}
+              onChange={(event) => {
+                const value = event.target.value;
+                setNames((current) =>
+                  Array.from(
+                    { length: Math.max(current.length, index + 1) },
+                    (_, i) => (i === index ? value : (current[i] ?? "")),
+                  ),
+                );
+              }}
+            />
+          </label>
+        ))}
+        <p className="form-note" aria-live="polite">
+          {linkedCount +
+            names.slice(0, freeFields).filter((name) => name.trim()).length}
+          /{shift.requiredHelpers} Personen eingetragen
+        </p>
+      </fieldset>
+    </details>
   );
 }
 

@@ -11,6 +11,8 @@ import {
   savePlan,
   saveHallManagers,
   saveHallTaskNames,
+  festChangesSchema,
+  saveFestChanges,
   saveShiftStaffing,
 } from "../../src/lib/hall/service";
 import { wallValue, type Options } from "../../src/lib/hall/planner";
@@ -420,4 +422,186 @@ test("a published plan keeps its assignments when time and task names are update
       expect.objectContaining({ kind: "CLOSE", helperNames: ["Jan"] }),
     ]),
   );
+});
+
+test("one festival save moves the date, keeps midnight offsets and saves names atomically", async () => {
+  const { id } = await hallWrite(hallId, (tx) =>
+    newPlan(tx, {
+      start: "2085-09-15T22:00",
+      end: "2085-09-16T02:00",
+      duration: 120,
+      title: "Fest über Mitternacht",
+      venue: key,
+      notes: "",
+      people: 3,
+    }),
+  );
+  await hallWrite(hallId, (tx) => publishPlan(tx, id, 0, true));
+  const [first, second] = await db.hallShift.findMany({
+    where: { planId: id },
+    orderBy: { startsAt: "asc" },
+  });
+  const people = (name: string) => ({ names: [name], removedMemberIds: [] });
+  const edits = {
+    id,
+    revision: 1,
+    day: "2085-09-21",
+    tasks: { PURCHASE: ["Kim"], OPEN: ["Alex"], CLOSE: ["Jan"] },
+    shifts: [
+      {
+        id: first.id,
+        schedule: { start: "21:30", end: "00:00", teamId: ownTeam },
+        people: people("Toni"),
+      },
+      {
+        id: second.id,
+        schedule: { start: "00:00", end: "02:30", teamId: otherTeam },
+      },
+    ],
+  };
+  await expect(
+    saveFestChanges(hallId, {
+      ...edits,
+      shifts: [
+        ...edits.shifts,
+        { id: "fremde-schicht", people: people("Nein") },
+      ],
+    }),
+  ).rejects.toThrow("Schichtzuordnung");
+  expect(await db.hallTask.count({ where: { planId: id } })).toBe(0);
+  expect(await db.hallShift.findUnique({ where: { id: first.id } })).toEqual(
+    first,
+  );
+
+  await saveFestChanges(hallId, edits);
+  const current = await db.hallPlan.findUniqueOrThrow({
+    where: { id },
+    include: { shifts: { orderBy: { startsAt: "asc" } }, tasks: true },
+  });
+  expect(current).toMatchObject({
+    day: "2085-09-21",
+    revision: 2,
+    shifts: [
+      { id: first.id, teamId: ownTeam, helperNames: ["Toni"] },
+      { id: second.id, teamId: otherTeam, helperNames: [] },
+    ],
+  });
+  expect(current.publishedAt).not.toBeNull();
+  expect(wallValue(current.startsAt)).toBe("2085-09-21T21:30");
+  expect(wallValue(current.endsAt)).toBe("2085-09-22T02:30");
+  expect(
+    current.shifts.map((shift) => [
+      wallValue(shift.startsAt),
+      wallValue(shift.endsAt),
+    ]),
+  ).toEqual([
+    ["2085-09-21T21:30", "2085-09-22T00:00"],
+    ["2085-09-22T00:00", "2085-09-22T02:30"],
+  ]);
+  expect(
+    current.tasks.map(({ kind, helperNames }) => [kind, helperNames]),
+  ).toEqual(
+    expect.arrayContaining([
+      ["PURCHASE", ["Kim"]],
+      ["OPEN", ["Alex"]],
+      ["CLOSE", ["Jan"]],
+    ]),
+  );
+  await expect(saveFestChanges(hallId, edits)).rejects.toThrow(
+    "zwischenzeitlich",
+  );
+});
+
+test("festival save allows team managers to change only their own shift names", async () => {
+  const { id } = await hallWrite(hallId, (tx) =>
+    newPlan(tx, {
+      start: "2085-10-15T10:00",
+      end: "2085-10-15T14:00",
+      duration: 120,
+      title: "Namen pro Mannschaft",
+      venue: key,
+      notes: "",
+      people: 3,
+    }),
+  );
+  const [first, second] = await db.hallShift.findMany({
+    where: { planId: id },
+    orderBy: { startsAt: "asc" },
+  });
+  await saveFestChanges(hallId, {
+    id,
+    revision: 0,
+    shifts: [
+      {
+        id: first.id,
+        schedule: { start: "10:00", end: "12:00", teamId: ownTeam },
+      },
+      {
+        id: second.id,
+        schedule: { start: "12:00", end: "14:00", teamId: otherTeam },
+        people: { names: ["Andere Mannschaft"], removedMemberIds: [] },
+      },
+    ],
+  });
+  await db.hallTeamManager.upsert({
+    where: { teamId_memberId: { teamId: ownTeam, memberId } },
+    create: { teamId: ownTeam, memberId },
+    update: {},
+  });
+
+  const entry = {
+    id: first.id,
+    people: { names: ["Eins", "Zwei", "Drei"], removedMemberIds: [] },
+  };
+  const changes = { id, revision: 1, shifts: [entry] };
+  await expect(
+    saveFestChanges(helperId, { ...changes, day: "2085-10-16" }),
+  ).rejects.toThrow("Administratoren");
+  await expect(
+    saveFestChanges(helperId, {
+      ...changes,
+      tasks: { PURCHASE: ["Nein"], OPEN: [], CLOSE: [] },
+    }),
+  ).rejects.toThrow("Administratoren");
+  await expect(
+    saveFestChanges(helperId, {
+      ...changes,
+      shifts: [
+        {
+          ...entry,
+          schedule: { start: "10:00", end: "12:00", teamId: otherTeam },
+        },
+      ],
+    }),
+  ).rejects.toThrow("Administratoren");
+  await expect(
+    saveFestChanges(helperId, {
+      ...changes,
+      shifts: [entry, { ...entry, id: second.id }],
+    }),
+  ).rejects.toThrow("Berechtigung");
+  expect(
+    await db.hallShift.findUnique({ where: { id: first.id } }),
+  ).toMatchObject({ helperNames: [] });
+  expect(
+    festChangesSchema.safeParse({ ...changes, publish: true }).success,
+  ).toBe(false);
+  expect(
+    festChangesSchema.safeParse({
+      ...changes,
+      shifts: [{ ...entry, start: "11:00" }],
+    }).success,
+  ).toBe(false);
+  await saveFestChanges(helperId, changes);
+  expect(
+    await db.hallShift.findUnique({ where: { id: first.id } }),
+  ).toMatchObject({ teamId: ownTeam, helperNames: ["Eins", "Zwei", "Drei"] });
+  expect(
+    await db.hallShift.findUnique({ where: { id: second.id } }),
+  ).toMatchObject({ teamId: otherTeam, helperNames: ["Andere Mannschaft"] });
+  expect(await db.hallPlan.findUnique({ where: { id } })).toMatchObject({
+    revision: 2,
+    day: "2085-10-15",
+    publishedAt: null,
+  });
 });

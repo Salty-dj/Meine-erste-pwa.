@@ -1802,7 +1802,8 @@ legend {
   min-width: 0;
 }
 
-.hall-staffing-form fieldset {
+.hall-fest-fields,
+.hall-staffing-form {
   padding: 0;
   margin: 8px 0 0;
   border: 0;
@@ -1840,7 +1841,7 @@ legend {
   }
 }
 
-.hall-staffing-form :is(input[type="datetime-local"], textarea) {
+.hall-staffing-form :is(input[type="time"], textarea) {
   box-sizing: border-box;
   width: 100%;
   min-width: 0;
@@ -1849,4 +1850,20 @@ legend {
 
 .hall-staffing-form textarea {
   resize: vertical;
+}
+
+
+.hall-fest-fields {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  margin: 0;
+}
+
+.hall-fest-fields > :is(button, .hall-fest-date) {
+  justify-self: start;
+}
+
+.hall-fest-date input {
+  font-size: 16px;
 }

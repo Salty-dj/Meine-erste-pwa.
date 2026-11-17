@@ -6,6 +6,8 @@ import { can } from "../roles";
 import { fixture, importRowSchema, type ImportRow } from "./import";
 import {
   dayOf,
+  hallDay,
+  wallValue,
   optionsSchema,
   overlap,
   schedule,
@@ -85,6 +87,36 @@ export const shiftStaffingSchema = z.discriminatedUnion("kind", [
     })
     .strict(),
 ]);
+const clockTime = z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/);
+const festPeopleSchema = z
+  .object({ names: z.array(helperName).max(100), removedMemberIds: memberIds })
+  .strict();
+export const festChangesSchema = z
+  .object({
+    ...shiftIdentity,
+    day: hallDay.optional(),
+    tasks: hallTaskNamesSchema.shape.names.strict().optional(),
+    shifts: z
+      .array(
+        z
+          .object({
+            id,
+            schedule: z
+              .object({
+                start: clockTime,
+                end: clockTime,
+                teamId: id.nullable(),
+              })
+              .strict()
+              .optional(),
+            people: festPeopleSchema.optional(),
+          })
+          .strict(),
+      )
+      .max(150),
+  })
+  .strict();
+
 export const hallManagersSchema = z
   .object({ id, memberIds, previousMemberIds: memberIds })
   .strict();
@@ -188,19 +220,48 @@ export async function saveHallTaskNames(
       "Der Plan wurde zwischenzeitlich geändert. Bitte neu laden.",
     );
 
-  for (const kind of ["PURCHASE", "OPEN", "CLOSE"] as const) {
-    const helperNames = input.names[kind].filter(Boolean);
-    await tx.hallTask.upsert({
-      where: { planId_kind: { planId: input.id, kind } },
-      create: { planId: input.id, kind, helperNames },
-      update: { helperNames },
-    });
-  }
+  await writeHallTaskNames(tx, input.id, input.names);
   await tx.hallPlan.update({
     where: { id: input.id },
     data: { revision: { increment: 1 } },
   });
   return { id: input.id };
+}
+
+async function writeHallTaskNames(
+  tx: Tx,
+  planId: string,
+  names: z.infer<typeof hallTaskNamesSchema>["names"],
+) {
+  for (const kind of ["PURCHASE", "OPEN", "CLOSE"] as const) {
+    const helperNames = names[kind].filter(Boolean);
+    await tx.hallTask.upsert({
+      where: { planId_kind: { planId, kind } },
+      create: { planId, kind, helperNames },
+      update: { helperNames },
+    });
+  }
+}
+
+function staffingPeople(
+  shift: { members: { id: string }[]; requiredHelpers: number },
+  input: z.infer<typeof festPeopleSchema>,
+) {
+  const removed = [...new Set(input.removedMemberIds)];
+  if (removed.some((id) => !shift.members.some((member) => member.id === id)))
+    throw new HallError(
+      "Mindestens eine Person ist dieser Schicht nicht zugeteilt.",
+    );
+  const helperNames = input.names.slice(
+    0,
+    input.names.findLastIndex(Boolean) + 1,
+  );
+  const members = shift.members.filter(({ id }) => !removed.includes(id));
+  if (helperNames.length > Math.max(0, shift.requiredHelpers - members.length))
+    throw new HallError(
+      "Es sind mehr Personen eingetragen als Plätze vorgesehen.",
+    );
+  return { removed, helperNames };
 }
 
 export function saveShiftStaffing(
@@ -300,24 +361,9 @@ export function saveShiftStaffing(
         conflict: "",
       };
     } else {
-      const removed = [...new Set(input.removedMemberIds)];
-      if (
-        removed.some((id) => !shift.members.some((member) => member.id === id))
-      )
-        throw new HallError(
-          "Mindestens eine Person ist dieser Schicht nicht zugeteilt.",
-        );
-      const names = input.names.slice(
-        0,
-        input.names.findLastIndex(Boolean) + 1,
-      );
-      const retained = shift.members.length - removed.length;
-      if (names.length > Math.max(0, shift.requiredHelpers - retained))
-        throw new HallError(
-          "Es sind mehr Personen eingetragen als Plätze vorgesehen.",
-        );
+      const { removed, helperNames } = staffingPeople(shift, input);
       data = {
-        helperNames: names,
+        helperNames,
         members: { disconnect: removed.map((id) => ({ id })) },
       };
     }
@@ -338,6 +384,287 @@ export function saveShiftStaffing(
         action: input.kind === "team" ? "HALL_SHIFT_EDIT" : "HALL_SHIFT_PEOPLE",
         entityType: "HallShift",
         entityId: shift.id,
+      },
+    });
+  });
+}
+
+const calendarMillis = (day: string) => Date.parse(day + "T00:00:00Z");
+
+function shiftWallDay(day: string, offset: number) {
+  return new Date(calendarMillis(day) + offset).toISOString().slice(0, 10);
+}
+
+export function saveFestChanges(
+  actorId: string,
+  input: z.infer<typeof festChangesSchema>,
+) {
+  return withHallActor(actorId, async (tx, roles) => {
+    const coordinator = can(roles, "hall");
+    if (
+      !coordinator &&
+      (input.day ||
+        input.tasks ||
+        input.shifts.some(({ schedule }) => schedule))
+    )
+      throw new HallError(
+        "Nur Hallenbewirtung und Administratoren dürfen das Fest oder die Schichteinteilung ändern.",
+      );
+    const plan = await tx.hallPlan.findUnique({
+      where: { id: input.id },
+      include: {
+        shifts: {
+          include: {
+            members: {
+              select: {
+                id: true,
+                active: true,
+                teams: { select: { teamId: true } },
+              },
+            },
+          },
+        },
+        tasks: { select: { kind: true, helperNames: true } },
+      },
+    });
+    if (!plan || plan.revision !== input.revision)
+      throw new HallError(
+        "Das Fest wurde zwischenzeitlich geändert. Bitte neu laden.",
+      );
+
+    const edits = new Map(input.shifts.map((edit) => [edit.id, edit]));
+    if (
+      edits.size !== input.shifts.length ||
+      input.shifts.some(
+        ({ id }) => !plan.shifts.some((shift) => shift.id === id),
+      )
+    )
+      throw new HallError("Ungültige Schichtzuordnung.");
+    const managedTeams = new Set(
+      coordinator
+        ? []
+        : (
+            await tx.hallTeamManager.findMany({
+              where: { member: { userId: actorId, active: true } },
+              select: { teamId: true },
+            })
+          ).map(({ teamId }) => teamId),
+    );
+
+    const newDay = input.day ?? plan.day;
+    const dayDelta = calendarMillis(newDay) - calendarMillis(plan.day);
+    const relocate = (instant: Date) =>
+      shiftWallDay(dayOf(instant), dayDelta) + wallValue(instant).slice(10);
+    const movedPlanTime = (instant: Date) =>
+      dayDelta ? dutyTime(relocate(instant)) : instant;
+    const oldPlanStart = movedPlanTime(plan.startsAt);
+    const oldPlanEnd = movedPlanTime(plan.endsAt);
+
+    const proposed = plan.shifts.map((shift) => {
+      const edit = edits.get(shift.id);
+      if (
+        edit &&
+        !coordinator &&
+        (!shift.teamId || !managedTeams.has(shift.teamId))
+      )
+        throw new HallError("Für diese Schicht fehlt die Berechtigung.");
+      const { start, end, teamId } = edit?.schedule ?? {
+        start: wallValue(shift.startsAt).slice(11),
+        end: wallValue(shift.endsAt).slice(11),
+        teamId: shift.teamId,
+      };
+      const oldStart = wallValue(shift.startsAt);
+      const oldEnd = wallValue(shift.endsAt);
+      const clocksChanged =
+        start !== oldStart.slice(11) || end !== oldEnd.slice(11);
+      let times = { startsAt: shift.startsAt, endsAt: shift.endsAt };
+      if (dayDelta || clocksChanged) {
+        const startDay = relocate(shift.startsAt).slice(0, 10);
+        const endDay =
+          clocksChanged &&
+          calendarMillis(oldEnd.slice(0, 10)) -
+            calendarMillis(oldStart.slice(0, 10)) <=
+            86400000 &&
+          +shift.endsAt - +shift.startsAt < 24 * 3600000
+            ? shiftWallDay(startDay, end < start ? 86400000 : 0)
+            : relocate(shift.endsAt).slice(0, 10);
+        times = dates(startDay + "T" + start, endDay + "T" + end);
+      }
+      const staffing = edit?.people ? staffingPeople(shift, edit.people) : null;
+      const members = staffing
+        ? shift.members.filter(({ id }) => !staffing.removed.includes(id))
+        : shift.members;
+      const helperNames = staffing?.helperNames ?? shift.helperNames;
+      const changedPeople =
+        !!staffing &&
+        (staffing.removed.length > 0 ||
+          JSON.stringify(helperNames) !== JSON.stringify(shift.helperNames));
+      return {
+        ...shift,
+        ...times,
+        teamId,
+        members,
+        helperNames,
+        removed: staffing?.removed ?? [],
+        changedPeople,
+        moved:
+          +times.startsAt !== +shift.startsAt ||
+          +times.endsAt !== +shift.endsAt,
+        changedTeam: teamId !== shift.teamId,
+      };
+    });
+
+    let startsAt = oldPlanStart;
+    let endsAt = oldPlanEnd;
+    if (proposed.some(({ moved }) => moved)) {
+      const first = Math.min(...proposed.map((shift) => +shift.startsAt));
+      const last = Math.max(...proposed.map((shift) => +shift.endsAt));
+      if (
+        first < +startsAt ||
+        plan.shifts.some((shift) => +shift.startsAt === +plan.startsAt)
+      )
+        startsAt = new Date(first);
+      if (
+        last > +endsAt ||
+        plan.shifts.some((shift) => +shift.endsAt === +plan.endsAt)
+      )
+        endsAt = new Date(last);
+    }
+    const changes = proposed.filter(
+      (shift) => shift.moved || shift.changedTeam || shift.changedPeople,
+    );
+    const planTimesChanged =
+      dayDelta !== 0 ||
+      +startsAt !== +plan.startsAt ||
+      +endsAt !== +plan.endsAt;
+    const taskNames = input.tasks;
+    const tasksChanged =
+      taskNames &&
+      (["PURCHASE", "OPEN", "CLOSE"] as const).some(
+        (kind) =>
+          JSON.stringify(taskNames[kind].filter(Boolean)) !==
+          JSON.stringify(
+            plan.tasks.find((task) => task.kind === kind)?.helperNames ?? [],
+          ),
+      );
+    if (!planTimesChanged && !changes.length && !tasksChanged) return;
+    if (planTimesChanged) {
+      if (endsAt <= startsAt || +endsAt - +startsAt > 36 * 3600000)
+        throw new HallError("Das Fest muss zwischen 0 und 36 Stunden dauern.");
+      if (
+        await tx.hallPlan.findFirst({
+          where: {
+            id: { not: plan.id },
+            venue: { equals: plan.venue, mode: "insensitive" },
+            startsAt: { lt: endsAt },
+            endsAt: { gt: startsAt },
+          },
+        })
+      )
+        throw new HallError(
+          "Für diese Halle überschneidet sich bereits ein Plan.",
+        );
+    }
+
+    const scheduleChanges = changes.filter(
+      (shift) => shift.moved || shift.changedTeam,
+    );
+    if (scheduleChanges.length) {
+      const teamIds = [
+        ...new Set(
+          scheduleChanges.flatMap((shift) =>
+            shift.changedTeam && shift.teamId ? [shift.teamId] : [],
+          ),
+        ),
+      ];
+      if (
+        (await tx.team.count({ where: { id: { in: teamIds } } })) !==
+        teamIds.length
+      )
+        throw new HallError("Eine Mannschaft ist nicht mehr vorhanden.");
+      const config = planOptions({ ...plan, day: newDay, endsAt });
+      const { gte, lt } = windowFor(config);
+      const window = {
+        gte: new Date(Math.min(+gte, +startsAt - 3 * 86400000)),
+        lt: new Date(Math.max(+lt, +endsAt + 4 * 86400000)),
+      };
+      const shiftIds = proposed.map(({ id }) => id);
+      const [matches, fixed] = await Promise.all([
+        tx.hallMatch.findMany({ where: { startsAt: window } }),
+        fixedSlots(tx, window, shiftIds),
+      ]);
+      for (const shift of scheduleChanges) {
+        const others = proposed.filter(({ id }) => id !== shift.id);
+        if (shift.teamId) {
+          const conflict = schedule(
+            [{ ...shift, teamId: null, locked: false }],
+            matches,
+            { ...config, teamIds: [shift.teamId] },
+            [...fixed, ...others],
+          )[0]?.conflict;
+          if (conflict) throw new HallError(conflict);
+        }
+        if (shift.moved) {
+          await checkShiftMembers(
+            tx,
+            shift,
+            config,
+            matches,
+            "Schicht",
+            shiftIds,
+          );
+          if (
+            others.some(
+              (other) =>
+                overlap(shift, other) &&
+                shift.members.some(({ id }) =>
+                  other.members.some((member) => member.id === id),
+                ),
+            )
+          )
+            throw new HallError(
+              "Schicht: Ein Mitglied hat einen Zeitkonflikt.",
+            );
+        }
+      }
+    }
+
+    for (const shift of changes) {
+      await tx.hallShift.update({
+        where: { id: shift.id },
+        data: {
+          staffingRevision: { increment: 1 },
+          ...(shift.moved || shift.changedTeam
+            ? {
+                startsAt: shift.startsAt,
+                endsAt: shift.endsAt,
+                teamId: shift.teamId,
+                conflict: "",
+              }
+            : {}),
+          ...(shift.changedPeople
+            ? {
+                helperNames: shift.helperNames,
+                members: { disconnect: shift.removed.map((id) => ({ id })) },
+              }
+            : {}),
+        },
+      });
+    }
+    if (tasksChanged) await writeHallTaskNames(tx, plan.id, taskNames);
+    await tx.hallPlan.update({
+      where: { id: plan.id },
+      data: {
+        revision: { increment: 1 },
+        ...(planTimesChanged ? { day: newDay, startsAt, endsAt } : {}),
+      },
+    });
+    await tx.auditLog.create({
+      data: {
+        actorId,
+        action: "HALL_FEST_EDIT",
+        entityType: "HallPlan",
+        entityId: plan.id,
       },
     });
   });
@@ -808,6 +1135,7 @@ async function checkShiftMembers(
   config: Options,
   matches: Match[],
   label = "Schicht",
+  excludedShiftIds = [shift.id],
 ) {
   for (const member of shift.members) {
     if (!member.active || config.blockedMemberIds.includes(member.id))
@@ -826,7 +1154,7 @@ async function checkShiftMembers(
       tx.hallShift.findFirst({
         where: {
           ...time,
-          id: { not: shift.id },
+          id: { notIn: excludedShiftIds },
           members: { some: { id: member.id } },
         },
       }),

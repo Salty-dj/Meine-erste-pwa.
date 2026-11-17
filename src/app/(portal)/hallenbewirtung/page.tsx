@@ -6,7 +6,6 @@ import { dayOf, hallDay, overlap, wallValue } from "@/lib/hall/planner";
 import { hallPlanScope } from "@/lib/hall/service";
 import {
   FestEditMode,
-  FestEditingOnly,
   FestTaskNames,
   HallTeamManagers,
   StaffingRow,
@@ -45,6 +44,14 @@ const shiftDay = (day: string, delta: number) =>
   new Date(+new Date(day) + delta * 86400000).toISOString().slice(0, 10);
 const timeSpan = (startsAt: Date, endsAt: Date) =>
   `${clock.format(startsAt)}–${dayOf(startsAt) === dayOf(endsAt) ? clock.format(endsAt) : dateTime.format(endsAt)} Uhr`;
+
+const shiftTimeSpan = (day: string, start: Date, end: Date) => {
+  const offset = (Date.parse(dayOf(start)) - Date.parse(day)) / 86400000;
+  const suffix = offset
+    ? ` (${offset > 0 ? "+" : ""}${offset} ${Math.abs(offset) === 1 ? "Tag" : "Tage"})`
+    : "";
+  return `${clock.format(start)}–${clock.format(end)} Uhr${suffix}`;
+};
 
 export default async function HallPage({
   searchParams,
@@ -90,7 +97,8 @@ export default async function HallPage({
     ? own.managedHallTeams.map(({ teamId }) => teamId)
     : [];
   const mayViewPublished = own ? own.active : actor.roles.includes("MEMBER");
-  const scope = manager ? {} : hallPlanScope(managedTeams, mayViewPublished);
+  const viewFullPlans = manager || managedTeams.length > 0;
+  const scope = viewFullPlans ? {} : hallPlanScope([], mayViewPublished);
   const [plans, teams, members, accounts, allSeason, games] = await Promise.all(
     [
       db.hallPlan.findMany({
@@ -98,7 +106,7 @@ export default async function HallPage({
         orderBy: [{ startsAt: "asc" }, { venue: "asc" }],
         include: {
           shifts: {
-            where: manager
+            where: viewFullPlans
               ? {}
               : {
                   OR: [
@@ -120,7 +128,7 @@ export default async function HallPage({
             },
           },
           tasks: {
-            where: manager
+            where: viewFullPlans
               ? {}
               : {
                   OR: [
@@ -131,7 +139,7 @@ export default async function HallPage({
             include: {
               _count: { select: { members: true } },
               members: {
-                where: manager ? {} : { id: ownId },
+                where: viewFullPlans ? {} : { id: ownId },
                 select: memberSelect,
               },
             },
@@ -342,6 +350,47 @@ export default async function HallPage({
                 </div>
               )}
               <FestEditMode
+                id={plan.id}
+                revision={plan.revision}
+                day={manager ? plan.day : undefined}
+                shiftIds={plan.shifts.map(({ id }) => id)}
+                extra={
+                  manager && (
+                    <div className="stack hall-editor">
+                      {!plan.publishedAt && (
+                        <PlanEditor
+                          key={plan.revision}
+                          teams={teams}
+                          members={choices}
+                          plan={{
+                            id: plan.id,
+                            revision: plan.revision,
+                            title: plan.title,
+                            venue: plan.venue,
+                            notes: plan.notes,
+                            start: wallValue(plan.startsAt),
+                            end: wallValue(plan.endsAt),
+                            tasks: mappedTasks,
+                            shifts: plan.shifts.map((shift) => ({
+                              id: shift.id,
+                              start: wallValue(shift.startsAt),
+                              end: wallValue(shift.endsAt),
+                              people: shift.requiredHelpers,
+                              teamId: shift.teamId,
+                              memberIds: shift.members.map(({ id }) => id),
+                              locked: shift.locked,
+                            })),
+                          }}
+                        />
+                      )}
+                      <Publish
+                        id={plan.id}
+                        revision={plan.revision}
+                        published={!!plan.publishedAt}
+                      />
+                    </div>
+                  )
+                }
                 allowed={
                   manager ||
                   plan.shifts.some(
@@ -373,13 +422,16 @@ export default async function HallPage({
                           return (
                             <StaffingRow
                               key={`${shift.id}:${shift.staffingRevision}`}
-                              time={timeSpan(shift.startsAt, shift.endsAt)}
+                              time={shiftTimeSpan(
+                                plan.day,
+                                shift.startsAt,
+                                shift.endsAt,
+                              )}
                               shift={{
                                 id: shift.id,
-                                staffingRevision: shift.staffingRevision,
                                 teamId: shift.teamId,
-                                start: wallValue(shift.startsAt),
-                                end: wallValue(shift.endsAt),
+                                start: wallValue(shift.startsAt).slice(11),
+                                end: wallValue(shift.endsAt).slice(11),
                                 team: shift.team,
                                 requiredHelpers: shift.requiredHelpers,
                                 helperNames: shift.helperNames,
@@ -413,7 +465,7 @@ export default async function HallPage({
                       const task = plan.tasks.find(
                         (task) => task.kind === kind,
                       );
-                      return manager || plan.publishedAt || task ? (
+                      return viewFullPlans || plan.publishedAt || task ? (
                         <div key={kind}>
                           <dt>{tasks[kind]}</dt>
                           <dd>
@@ -429,55 +481,19 @@ export default async function HallPage({
                   )}
                 </dl>
                 {manager && (
-                  <FestEditingOnly>
-                    <FestTaskNames
-                      key={plan.revision}
-                      id={plan.id}
-                      revision={plan.revision}
-                      initial={{
-                        PURCHASE:
-                          plan.tasks.find(({ kind }) => kind === "PURCHASE")
-                            ?.helperNames ?? [],
-                        OPEN:
-                          plan.tasks.find(({ kind }) => kind === "OPEN")
-                            ?.helperNames ?? [],
-                        CLOSE:
-                          plan.tasks.find(({ kind }) => kind === "CLOSE")
-                            ?.helperNames ?? [],
-                      }}
-                    />
-                    {!plan.publishedAt && (
-                      <PlanEditor
-                        key={plan.revision}
-                        teams={teams}
-                        members={choices}
-                        plan={{
-                          id: plan.id,
-                          revision: plan.revision,
-                          title: plan.title,
-                          venue: plan.venue,
-                          notes: plan.notes,
-                          start: wallValue(plan.startsAt),
-                          end: wallValue(plan.endsAt),
-                          tasks: mappedTasks,
-                          shifts: plan.shifts.map((shift) => ({
-                            id: shift.id,
-                            start: wallValue(shift.startsAt),
-                            end: wallValue(shift.endsAt),
-                            people: shift.requiredHelpers,
-                            teamId: shift.teamId,
-                            memberIds: shift.members.map(({ id }) => id),
-                            locked: shift.locked,
-                          })),
-                        }}
-                      />
-                    )}
-                    <Publish
-                      id={plan.id}
-                      revision={plan.revision}
-                      published={!!plan.publishedAt}
-                    />
-                  </FestEditingOnly>
+                  <FestTaskNames
+                    initial={{
+                      PURCHASE:
+                        plan.tasks.find(({ kind }) => kind === "PURCHASE")
+                          ?.helperNames ?? [],
+                      OPEN:
+                        plan.tasks.find(({ kind }) => kind === "OPEN")
+                          ?.helperNames ?? [],
+                      CLOSE:
+                        plan.tasks.find(({ kind }) => kind === "CLOSE")
+                          ?.helperNames ?? [],
+                    }}
+                  />
                 )}
               </FestEditMode>
             </article>

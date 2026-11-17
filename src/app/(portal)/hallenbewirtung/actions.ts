@@ -15,6 +15,8 @@ import {
   hallManagersSchema,
   hallTaskNamesSchema,
   saveHallTaskNames,
+  festChangesSchema,
+  saveFestChanges,
   hallWrite,
   importMatches,
   importSchema,
@@ -39,6 +41,30 @@ const command = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("import"), data: importSchema }),
   z.object({ kind: z.literal("generate"), data: optionsSchema }),
 ]);
+
+export async function updateFest(input: unknown) {
+  const actor = await requireReadyUser();
+  await assertOrigin();
+  const parsed = festChangesSchema.safeParse(input);
+  if (!parsed.success)
+    return {
+      ok: false as const,
+      error: "Bitte prüfe Datum, Uhrzeiten und Namen.",
+    };
+  try {
+    await saveFestChanges(actor.id, parsed.data);
+    revalidatePath("/hallenbewirtung");
+    return { ok: true as const };
+  } catch (error) {
+    return {
+      ok: false as const,
+      error:
+        error instanceof HallError || error instanceof DutyError
+          ? error.message
+          : "Das Fest konnte nicht gespeichert werden.",
+    };
+  }
+}
 
 export async function updateHallStaffing(input: unknown) {
   const actor = await requireReadyUser();
