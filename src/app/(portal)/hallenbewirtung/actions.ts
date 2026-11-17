@@ -1,7 +1,7 @@
 "use server";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { assertOrigin, requirePermission } from "@/lib/auth";
+import { assertOrigin, requirePermission, requireReadyUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { DutyError } from "@/lib/duty-input";
 import { readSchedule } from "@/lib/hall/import";
@@ -12,12 +12,16 @@ import {
   editPlanSchema,
   generateSeason,
   HallError,
+  hallManagersSchema,
   hallWrite,
   importMatches,
   importSchema,
   newPlan,
   publishPlan,
   savePlan,
+  saveHallManagers,
+  saveShiftStaffing,
+  shiftStaffingSchema,
 } from "@/lib/hall/service";
 
 const publishSchema = z.object({
@@ -32,6 +36,48 @@ const command = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("import"), data: importSchema }),
   z.object({ kind: z.literal("generate"), data: optionsSchema }),
 ]);
+
+export async function updateHallStaffing(input: unknown) {
+  const actor = await requireReadyUser();
+  await assertOrigin();
+  const parsed = shiftStaffingSchema.safeParse(input);
+  if (!parsed.success)
+    return { ok: false as const, error: "Ungültige Schichteingaben." };
+  try {
+    await saveShiftStaffing(actor.id, parsed.data);
+    revalidatePath("/hallenbewirtung");
+    return { ok: true as const };
+  } catch (error) {
+    return {
+      ok: false as const,
+      error:
+        error instanceof HallError
+          ? error.message
+          : "Die Schicht konnte nicht gespeichert werden.",
+    };
+  }
+}
+
+export async function updateHallManagers(input: unknown) {
+  const actor = await requirePermission("hall");
+  await assertOrigin();
+  const parsed = hallManagersSchema.safeParse(input);
+  if (!parsed.success)
+    return { ok: false as const, error: "Ungültige Auswahl." };
+  try {
+    await saveHallManagers(actor.id, parsed.data);
+    revalidatePath("/hallenbewirtung");
+    return { ok: true as const };
+  } catch (error) {
+    return {
+      ok: false as const,
+      error:
+        error instanceof HallError
+          ? error.message
+          : "Die Verantwortlichen konnten nicht gespeichert werden.",
+    };
+  }
+}
 
 export async function runHallCommand(input: unknown) {
   const actor = await requirePermission("hall");

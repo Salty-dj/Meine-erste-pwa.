@@ -9,7 +9,8 @@ import {
   wallMinutes,
   wallValue,
 } from "@/lib/hall/planner";
-import { memberPlanScope } from "@/lib/hall/service";
+import { hallPlanScope } from "@/lib/hall/service";
+import { HallTeamManagers, StaffingRow } from "./staffing";
 import {
   CreatePlan,
   PlanEditor,
@@ -77,11 +78,18 @@ export default async function HallPage({
     ? null
     : await db.member.findUnique({
         where: { userId: actor.id },
-        select: { id: true, active: true, teams: { select: { teamId: true } } },
+        select: {
+          id: true,
+          active: true,
+          managedHallTeams: { select: { teamId: true } },
+        },
       });
   const ownId = own?.active ? own.id : "";
-  const ownTeams = own?.active ? own.teams.map(({ teamId }) => teamId) : [];
-  const scope = manager ? {} : memberPlanScope(ownId, ownTeams);
+  const managedTeams = own?.active
+    ? own.managedHallTeams.map(({ teamId }) => teamId)
+    : [];
+  const mayViewPublished = own ? own.active : actor.roles.includes("MEMBER");
+  const scope = manager ? {} : hallPlanScope(managedTeams, mayViewPublished);
   const [plans, teams, members, accounts, allSeason, games] = await Promise.all(
     [
       db.hallPlan.findMany({
@@ -93,16 +101,20 @@ export default async function HallPage({
               ? {}
               : {
                   OR: [
-                    { teamId: { in: ownTeams } },
-                    { members: { some: { id: ownId } } },
+                    { plan: { publishedAt: { not: null } } },
+                    { teamId: { in: managedTeams } },
                   ],
                 },
             orderBy: [{ startsAt: "asc" }, { id: "asc" }],
             include: {
               team: { select: { name: true } },
               members: {
-                where: manager ? {} : { id: ownId },
                 select: memberSelect,
+                orderBy: [
+                  { lastName: "asc" },
+                  { firstName: "asc" },
+                  { id: "asc" },
+                ],
               },
             },
           },
@@ -119,14 +131,20 @@ export default async function HallPage({
       }),
       manager
         ? db.team.findMany({
-            select: { id: true, name: true },
+            select: {
+              id: true,
+              name: true,
+              hallManagers: { select: { memberId: true } },
+            },
             orderBy: { name: "asc" },
           })
         : [],
       manager
         ? db.member.findMany({
-            where: { active: true },
-            select: memberSelect,
+            where: {
+              OR: [{ active: true }, { managedHallTeams: { some: {} } }],
+            },
+            select: { ...memberSelect, active: true },
             orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
           })
         : [],
@@ -149,6 +167,7 @@ export default async function HallPage({
             where: { plan: { day: { gte: from, lte: to } } },
             select: {
               teamId: true,
+              helperNames: true,
               startsAt: true,
               endsAt: true,
               _count: { select: { members: true } },
@@ -166,10 +185,12 @@ export default async function HallPage({
       }),
     ],
   );
-  const choices = members.map((member) => ({
-    id: member.id,
-    name: fullName(member),
-  }));
+  const choices = members
+    .filter(({ active }) => active)
+    .map((member) => ({
+      id: member.id,
+      name: fullName(member),
+    }));
   const stat = teams.map((team) => {
     const shifts = allSeason.filter((shift) => shift.teamId === team.id);
     return {
@@ -207,6 +228,14 @@ export default async function HallPage({
           <CreatePlan />
           <ImportSchedule teams={teams} />
           <SeasonPlanner teams={teams} members={choices} from={from} to={to} />
+          <HallTeamManagers
+            teams={teams}
+            members={members.map((member) => ({
+              id: member.id,
+              active: member.active,
+              name: fullName(member) + (member.active ? "" : " (inaktiv)"),
+            }))}
+          />
           {admin && (
             <RoleManagement
               accounts={accounts.map((account) => ({
@@ -262,7 +291,7 @@ export default async function HallPage({
           <p className="muted">
             {manager
               ? "Für diese Ansicht gibt es noch keine Dienstpläne."
-              : "Für dich sind in dieser Ansicht keine veröffentlichten Dienste eingeteilt."}
+              : "Für diese Ansicht gibt es keine sichtbaren Dienstpläne."}
           </p>
         )}
         {plans.map((plan) => {
@@ -333,35 +362,34 @@ export default async function HallPage({
                               overlap(shift, game),
                           );
                         return (
-                          <tr key={shift.id}>
-                            <td data-label="Schicht">
-                              {timeSpan(shift.startsAt, shift.endsAt)}
-                            </td>
-                            <td data-label="Mannschaft">
-                              {shift.team?.name ?? "–"}
-                            </td>
-                            <td data-label="Personen">
-                              {shift.members.map(fullName).join(", ") || "–"}{" "}
-                              {manager &&
-                                ` · ${shift.members.length}/${shift.requiredHelpers}`}
-                            </td>
-                            <td data-label="Status">
-                              {[
-                                !shift.teamId && shift.members.length === 0
-                                  ? "Offen"
-                                  : manager &&
-                                      shift.members.length <
-                                        shift.requiredHelpers
-                                    ? "Sollstärke offen"
-                                    : "",
-                                shift.locked ? "Gesperrt" : "",
-                                manager && shift.conflict,
-                                plays ? "Konflikt mit eigenem Spiel" : "",
-                              ]
-                                .filter(Boolean)
-                                .join(" · ") || "Eingeteilt"}
-                            </td>
-                          </tr>
+                          <StaffingRow
+                            key={`${shift.id}:${shift.staffingRevision}`}
+                            time={timeSpan(shift.startsAt, shift.endsAt)}
+                            shift={{
+                              id: shift.id,
+                              staffingRevision: shift.staffingRevision,
+                              teamId: shift.teamId,
+                              team: shift.team,
+                              requiredHelpers: shift.requiredHelpers,
+                              helperNames: shift.helperNames,
+                              members: shift.members.map((member) => ({
+                                id: member.id,
+                                name: fullName(member),
+                              })),
+                            }}
+                            teams={teams}
+                            canChangeTeam={manager}
+                            canEditPeople={
+                              manager ||
+                              (shift.teamId !== null &&
+                                managedTeams.includes(shift.teamId))
+                            }
+                            notices={[
+                              shift.locked ? "Planung gesperrt" : "",
+                              manager ? shift.conflict : "",
+                              plays ? "Konflikt mit eigenem Spiel" : "",
+                            ]}
+                          />
                         );
                       })}
                     </tbody>
@@ -428,7 +456,10 @@ export default async function HallPage({
           <p>
             {
               allSeason.filter(
-                (shift) => !shift.teamId && !shift._count.members,
+                (shift) =>
+                  !shift.teamId &&
+                  !shift._count.members &&
+                  !shift.helperNames.some(Boolean),
               ).length
             }{" "}
             Schichten ohne Einteilung

@@ -1,4 +1,4 @@
-import { Prisma } from "@prisma/client";
+import { Prisma, type RoleCode } from "@prisma/client";
 import { z } from "zod";
 import { db } from "../db";
 import { dutyTime } from "../duty-input";
@@ -51,12 +51,41 @@ export const editPlanSchema = z.object({
   tasks: z.object({ PURCHASE: memberIds, OPEN: memberIds, CLOSE: memberIds }),
 });
 export const importSchema = z.array(importRowSchema).min(1).max(1000);
+const shiftIdentity = { id, revision: z.number().int().nonnegative() };
+export const shiftStaffingSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("team"),
+      ...shiftIdentity,
+      teamId: id.nullable(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("people"),
+      ...shiftIdentity,
+      names: z
+        .array(
+          z
+            .string()
+            .trim()
+            .max(160)
+            .regex(/^[^\p{Cc}]*$/u),
+        )
+        .max(100),
+      removedMemberIds: memberIds,
+    })
+    .strict(),
+]);
+export const hallManagersSchema = z
+  .object({ id, memberIds, previousMemberIds: memberIds })
+  .strict();
 export class HallError extends Error {}
 type Tx = Prisma.TransactionClient;
 
-export function hallWrite<T>(
+function withHallActor<T>(
   actorId: string,
-  operation: (tx: Tx) => Promise<T>,
+  operation: (tx: Tx, roles: RoleCode[]) => Promise<T>,
 ) {
   return db.$transaction(
     async (tx) => {
@@ -66,19 +95,187 @@ export function hallWrite<T>(
         where: { id: actorId },
         include: { roles: true },
       });
-      if (
-        !actor?.active ||
-        actor.mustChangePassword ||
-        !can(
-          actor.roles.map((role) => role.roleId),
-          "hall",
-        )
-      )
+      if (!actor?.active || actor.mustChangePassword)
         throw new HallError("Zugriff nicht erlaubt.");
-      return operation(tx);
+      return operation(
+        tx,
+        actor.roles.map((role) => role.roleId),
+      );
     },
     { isolationLevel: "ReadCommitted", maxWait: 8000, timeout: 30000 },
   );
+}
+
+export function hallWrite<T>(
+  actorId: string,
+  operation: (tx: Tx) => Promise<T>,
+) {
+  return withHallActor(actorId, (tx, roles) => {
+    if (!can(roles, "hall")) throw new HallError("Zugriff nicht erlaubt.");
+    return operation(tx);
+  });
+}
+
+export function saveHallManagers(
+  actorId: string,
+  input: z.infer<typeof hallManagersSchema>,
+) {
+  return hallWrite(actorId, async (tx) => {
+    await tx.team.findUniqueOrThrow({
+      where: { id: input.id },
+      select: { id: true },
+    });
+    const current = await tx.hallTeamManager.findMany({
+      where: { teamId: input.id },
+    });
+    const selected = [...new Set(input.memberIds)];
+    const existing = new Set(current.map(({ memberId }) => memberId));
+    const sameSelection = (ids: string[]) =>
+      ids.length === existing.size && ids.every((id) => existing.has(id));
+    if (sameSelection(selected)) return;
+    if (!sameSelection([...new Set(input.previousMemberIds)]))
+      throw new HallError(
+        "Die Verantwortlichen wurden zwischenzeitlich geändert. Bitte neu laden.",
+      );
+    const added = selected.filter((id) => !existing.has(id));
+    if (
+      added.length &&
+      (await tx.member.count({
+        where: { id: { in: added }, active: true },
+      })) !== added.length
+    )
+      throw new HallError(
+        "Neue Verantwortliche müssen aktive Vereinsmitglieder sein.",
+      );
+    const removed = [...existing].filter((id) => !selected.includes(id));
+    if (removed.length)
+      await tx.hallTeamManager.deleteMany({
+        where: { teamId: input.id, memberId: { in: removed } },
+      });
+    if (added.length)
+      await tx.hallTeamManager.createMany({
+        data: added.map((memberId) => ({ teamId: input.id, memberId })),
+      });
+    await tx.auditLog.create({
+      data: {
+        actorId,
+        action: "HALL_TEAM_MANAGERS",
+        entityType: "Team",
+        entityId: input.id,
+      },
+    });
+  });
+}
+
+export function saveShiftStaffing(
+  actorId: string,
+  input: z.infer<typeof shiftStaffingSchema>,
+) {
+  return withHallActor(actorId, async (tx, roles) => {
+    const coordinator = can(roles, "hall");
+    if (input.kind === "team" && !coordinator)
+      throw new HallError(
+        "Nur Hallenbewirtung und Administratoren dürfen Mannschaften ändern.",
+      );
+    const shift = await tx.hallShift.findUnique({
+      where: { id: input.id },
+      include: { plan: true, members: { select: { id: true } } },
+    });
+    if (
+      !shift ||
+      (!coordinator &&
+        (!shift.teamId ||
+          !(await tx.hallTeamManager.findFirst({
+            where: {
+              teamId: shift.teamId,
+              member: { userId: actorId, active: true },
+            },
+            select: { memberId: true },
+          }))))
+    )
+      throw new HallError("Für diese Schicht fehlt die Berechtigung.");
+    if (shift.staffingRevision !== input.revision)
+      throw new HallError(
+        "Diese Schicht wurde zwischenzeitlich geändert. Bitte neu laden.",
+      );
+
+    let data: Prisma.HallShiftUpdateInput;
+    if (input.kind === "team") {
+      if (shift.teamId === input.teamId) return;
+      if (input.teamId) {
+        if (
+          !(await tx.team.findUnique({
+            where: { id: input.teamId },
+            select: { id: true },
+          }))
+        )
+          throw new HallError("Die Mannschaft ist nicht mehr vorhanden.");
+        const config = planOptions(shift.plan);
+        const { lt, gte } = windowFor(config);
+        const window = {
+          gte: new Date(Math.min(+gte, +shift.startsAt - 3 * 86400000)),
+          lt: new Date(Math.max(+lt, +shift.endsAt + 4 * 86400000)),
+        };
+        const [matches, fixed] = await Promise.all([
+          tx.hallMatch.findMany({ where: { startsAt: window } }),
+          fixedSlots(tx, window, [shift.id]),
+        ]);
+        const conflict = schedule(
+          [{ ...shift, teamId: null, locked: false }],
+          matches,
+          { ...config, teamIds: [input.teamId] },
+          fixed,
+        )[0]?.conflict;
+        if (conflict) throw new HallError(conflict);
+      }
+      data = {
+        team: input.teamId
+          ? { connect: { id: input.teamId } }
+          : { disconnect: true },
+        conflict: "",
+      };
+    } else {
+      const removed = [...new Set(input.removedMemberIds)];
+      if (
+        removed.some((id) => !shift.members.some((member) => member.id === id))
+      )
+        throw new HallError(
+          "Mindestens eine Person ist dieser Schicht nicht zugeteilt.",
+        );
+      const names = input.names.slice(
+        0,
+        input.names.findLastIndex(Boolean) + 1,
+      );
+      const retained = shift.members.length - removed.length;
+      if (names.length > Math.max(0, shift.requiredHelpers - retained))
+        throw new HallError(
+          "Es sind mehr Personen eingetragen als Plätze vorgesehen.",
+        );
+      data = {
+        helperNames: names,
+        members: { disconnect: removed.map((id) => ({ id })) },
+      };
+    }
+    await tx.hallShift.update({
+      where: { id: shift.id },
+      data: {
+        ...data,
+        staffingRevision: { increment: 1 },
+      },
+    });
+    await tx.hallPlan.update({
+      where: { id: shift.planId },
+      data: { revision: { increment: 1 } },
+    });
+    await tx.auditLog.create({
+      data: {
+        actorId,
+        action: input.kind === "team" ? "HALL_SHIFT_TEAM" : "HALL_SHIFT_PEOPLE",
+        entityType: "HallShift",
+        entityId: shift.id,
+      },
+    });
+  });
 }
 
 function dates(start: string, end: string) {
@@ -201,6 +398,7 @@ export async function savePlan(tx: Tx, data: z.infer<typeof editPlanSchema>) {
         (id) =>
           !active(id) ||
           (shift.teamId &&
+            !previous?.members.some((member) => member.id === id) &&
             !people
               .get(id)
               ?.teams.some(({ teamId }) => teamId === shift.teamId)),
@@ -208,6 +406,16 @@ export async function savePlan(tx: Tx, data: z.infer<typeof editPlanSchema>) {
     )
       throw new HallError(
         "Schichtmitglieder müssen aktiv, zugelassen und der gewählten Mannschaft zugeordnet sein.",
+      );
+    const helperNames = previous?.helperNames ?? [];
+    const filledNames = helperNames.filter(Boolean);
+    const available = Math.max(0, shift.people - unique.length);
+    if (
+      !unchanged &&
+      (filledNames.length > available || unique.length > shift.people)
+    )
+      throw new HallError(
+        "Die Schicht benötigt genügend Plätze für die bereits eingeteilten Personen.",
       );
     const overlapping = shifts.some(
       (other) =>
@@ -231,7 +439,13 @@ export async function savePlan(tx: Tx, data: z.infer<typeof editPlanSchema>) {
     if (shift.id)
       await tx.hallShift.update({
         where: { id: shift.id },
-        data: { ...fields, members: { set: unique.map((id) => ({ id })) } },
+        data: {
+          ...fields,
+          helperNames:
+            helperNames.length > available ? filledNames : helperNames,
+          staffingRevision: { increment: 1 },
+          members: { set: unique.map((id) => ({ id })) },
+        },
       });
     else
       await tx.hallShift.create({
@@ -405,7 +619,11 @@ export async function generateSeason(tx: Tx, options: Options) {
       for (const plan of existing) {
         if (plan.publishedAt) continue;
         const open = plan.shifts.filter(
-          (shift) => !shift.locked && !shift.teamId && !shift._count.members,
+          (shift) =>
+            !shift.locked &&
+            !shift.teamId &&
+            !shift._count.members &&
+            !shift.helperNames.some(Boolean),
         );
         if (open.length) {
           pending.push(...open);
@@ -473,7 +691,7 @@ export async function generateSeason(tx: Tx, options: Options) {
   for (const { ids, teamId, conflict } of groups.values())
     await tx.hallShift.updateMany({
       where: { id: { in: ids } },
-      data: { teamId, conflict },
+      data: { teamId, conflict, staffingRevision: { increment: 1 } },
     });
   if (changed.size)
     await tx.hallPlan.updateMany({
@@ -486,6 +704,35 @@ export async function generateSeason(tx: Tx, options: Options) {
     assigned: results.filter((r) => r.teamId).length,
     unassigned: results.filter((r) => !r.teamId).length,
   };
+}
+
+function planOptions(plan: {
+  rules: Prisma.JsonValue;
+  day: string;
+  endsAt: Date;
+}): Options {
+  const parsed = optionsSchema.safeParse(plan.rules);
+  return parsed.success
+    ? parsed.data
+    : {
+        from: plan.day,
+        to: dayOf(plan.endsAt),
+        before: 0,
+        after: 0,
+        duration: 120,
+        people: 1,
+        matchBefore: 0,
+        matchAfter: 0,
+        travel: 0,
+        pause: 0,
+        max: 500,
+        teamIds: [],
+        excluded: [],
+        targets: {},
+        blockedMemberIds: [],
+        blocks: [],
+        rules: [],
+      };
 }
 
 export async function publishPlan(
@@ -517,28 +764,7 @@ export async function publishPlan(
     );
   if (Boolean(plan.publishedAt) === publish) return { id };
   if (publish) {
-    const parsed = optionsSchema.safeParse(plan.rules);
-    const config: Options = parsed.success
-      ? parsed.data
-      : {
-          from: plan.day,
-          to: dayOf(plan.endsAt),
-          before: 0,
-          after: 0,
-          duration: 120,
-          people: 1,
-          matchBefore: 0,
-          matchAfter: 0,
-          travel: 0,
-          pause: 0,
-          max: 500,
-          teamIds: [],
-          excluded: [],
-          targets: {},
-          blockedMemberIds: [],
-          blocks: [],
-          rules: [],
-        };
+    const config = planOptions(plan);
     const window = windowFor(config);
     const [matches, fixed] = await Promise.all([
       tx.hallMatch.findMany({ where: { startsAt: window } }),
@@ -575,15 +801,8 @@ export async function publishPlan(
         if (conflict) throw new HallError(`${label}: ${conflict}.`);
       }
       for (const member of shift.members) {
-        if (
-          !member.active ||
-          blocked.has(member.id) ||
-          (shift.teamId &&
-            !member.teams.some(({ teamId }) => teamId === shift.teamId))
-        )
-          throw new HallError(
-            `${label}: Inaktives, gesperrtes oder nicht zugehöriges Mitglied.`,
-          );
+        if (!member.active || blocked.has(member.id))
+          throw new HallError(`${label}: Inaktives oder gesperrtes Mitglied.`);
         const time = {
           startsAt: { lt: shift.endsAt },
           endsAt: { gt: shift.startsAt },
@@ -631,24 +850,14 @@ export async function publishPlan(
   return { id };
 }
 
-export function memberPlanScope(
-  memberId: string,
+export function hallPlanScope(
   teamIds: string[],
+  mayViewPublished: boolean,
 ): Prisma.HallPlanWhereInput {
   return {
-    publishedAt: { not: null },
     OR: [
-      {
-        shifts: {
-          some: {
-            OR: [
-              { teamId: { in: teamIds } },
-              { members: { some: { id: memberId } } },
-            ],
-          },
-        },
-      },
-      { tasks: { some: { members: { some: { id: memberId } } } } },
+      ...(mayViewPublished ? [{ publishedAt: { not: null } }] : []),
+      { shifts: { some: { teamId: { in: teamIds } } } },
     ],
   };
 }

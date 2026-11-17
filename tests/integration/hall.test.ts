@@ -5,10 +5,12 @@ import {
   generateSeason,
   hallWrite,
   importMatches,
-  memberPlanScope,
+  hallPlanScope,
   newPlan,
   publishPlan,
   savePlan,
+  saveHallManagers,
+  saveShiftStaffing,
 } from "../../src/lib/hall/service";
 import { wallValue, type Options } from "../../src/lib/hall/planner";
 import type { ImportRow } from "../../src/lib/hall/import";
@@ -76,7 +78,7 @@ test("drafts are private; granted coordinator can save, lock and publish a manua
     hallWrite(helperId, (tx) => newPlan(tx, create)),
   ).rejects.toThrow("Zugriff");
   const { id } = await hallWrite(hallId, (tx) => newPlan(tx, create));
-  const scope = memberPlanScope(memberId, [ownTeam]);
+  const scope = hallPlanScope([], true);
   const draft = await db.hallPlan.findUniqueOrThrow({
     where: { id },
     include: { shifts: { orderBy: { startsAt: "asc" } } },
@@ -118,9 +120,9 @@ test("drafts are private; granted coordinator can save, lock and publish a manua
   expect(await db.hallPlan.count({ where: { id, AND: [scope] } })).toBe(1);
   expect(
     await db.hallPlan.count({
-      where: { id, AND: [memberPlanScope("another", [])] },
+      where: { id, AND: [hallPlanScope([otherTeam], true)] },
     }),
-  ).toBe(0);
+  ).toBe(1);
 });
 
 test("confirmed imports deduplicate and automatic replanning preserves assignments", async () => {
@@ -187,4 +189,172 @@ test("confirmed imports deduplicate and automatic replanning preserves assignmen
   await expect(
     hallWrite(hallId, (tx) => publishPlan(tx, plans[0].id, 0, true)),
   ).rejects.toThrow("Eigenes Spiel");
+});
+
+test("staffing is scoped to team managers and editable in place after publication", async () => {
+  const admin = await db.user.create({
+    data: {
+      email: `staff-admin-${key}@example.test`,
+      name: "Admin",
+      passwordHash: "unused",
+      mustChangePassword: false,
+      roles: { create: { roleId: "CLUB_ADMIN" } },
+    },
+  });
+  const second = await db.user.create({
+    data: {
+      email: `staff-manager-${key}@example.test`,
+      name: "Zweite Person",
+      passwordHash: "unused",
+      mustChangePassword: false,
+      member: { create: { firstName: "Zweite", lastName: key } },
+    },
+    include: { member: true },
+  });
+  const additionalId = second.member!.id;
+  await expect(
+    saveHallManagers(helperId, {
+      id: ownTeam,
+      memberIds: [memberId],
+      previousMemberIds: [],
+    }),
+  ).rejects.toThrow("Zugriff");
+  await saveHallManagers(admin.id, {
+    id: ownTeam,
+    memberIds: [memberId, additionalId],
+    previousMemberIds: [],
+  });
+  await saveHallManagers(hallId, {
+    id: otherTeam,
+    memberIds: [additionalId],
+    previousMemberIds: [],
+  });
+  expect(await db.hallTeamManager.count({ where: { teamId: ownTeam } })).toBe(
+    2,
+  );
+
+  const { id } = await hallWrite(hallId, (tx) =>
+    newPlan(tx, {
+      start: "2085-03-15T10:00",
+      end: "2085-03-15T14:00",
+      duration: 120,
+      title: "Fest",
+      venue: key,
+      notes: "",
+      people: 3,
+    }),
+  );
+  const [first, later] = await db.hallShift.findMany({
+    where: { planId: id },
+    orderBy: { startsAt: "asc" },
+  });
+  const editTeam = (
+    actorId: string,
+    shiftId: string,
+    revision: number,
+    teamId: string | null,
+  ) =>
+    saveShiftStaffing(actorId, { kind: "team", id: shiftId, revision, teamId });
+  const editPeople = (
+    actorId: string,
+    shiftId: string,
+    revision: number,
+    names: string[],
+    removedMemberIds: string[] = [],
+  ) =>
+    saveShiftStaffing(actorId, {
+      kind: "people",
+      id: shiftId,
+      revision,
+      names,
+      removedMemberIds,
+    });
+  await expect(editPeople(helperId, first.id, 0, ["Gast"])).rejects.toThrow(
+    "Berechtigung",
+  );
+  await editTeam(hallId, first.id, 0, ownTeam);
+  await editTeam(admin.id, later.id, 0, otherTeam);
+  await db.hallShift.update({
+    where: { id: first.id },
+    data: {
+      locked: true,
+      members: { connect: { id: memberId } },
+    },
+  });
+  expect(
+    await db.hallPlan.count({
+      where: { id, AND: [hallPlanScope([ownTeam], true)] },
+    }),
+  ).toBe(1);
+  expect(
+    await db.hallPlan.count({ where: { id, AND: [hallPlanScope([], true)] } }),
+  ).toBe(0);
+
+  await expect(editTeam(helperId, first.id, 1, otherTeam)).rejects.toThrow(
+    "dürfen Mannschaften",
+  );
+  await expect(editPeople(helperId, later.id, 1, ["Gast"])).rejects.toThrow(
+    "Berechtigung",
+  );
+  await expect(
+    editPeople(helperId, first.id, 1, ["A", "B", "C"]),
+  ).rejects.toThrow("mehr Personen");
+  await expect(
+    editPeople(helperId, first.id, 1, [], [additionalId]),
+  ).rejects.toThrow("nicht zugeteilt");
+  await expect(
+    hallWrite(helperId, (tx) => publishPlan(tx, id, 2, true)),
+  ).rejects.toThrow("Zugriff");
+  await hallWrite(hallId, (tx) => publishPlan(tx, id, 2, true));
+  const before = await db.hallShift.findUniqueOrThrow({
+    where: { id: later.id },
+  });
+  await editPeople(helperId, first.id, 1, ["", "Freier Name"]);
+  await expect(
+    editPeople(second.id, first.id, 1, ["Veraltet"]),
+  ).rejects.toThrow("zwischenzeitlich");
+  await editTeam(hallId, first.id, 2, otherTeam);
+  expect(
+    await db.hallShift.findUniqueOrThrow({
+      where: { id: first.id },
+      include: { members: { select: { id: true } } },
+    }),
+  ).toMatchObject({
+    locked: true,
+    teamId: otherTeam,
+    helperNames: ["", "Freier Name"],
+    members: [{ id: memberId }],
+  });
+  expect(
+    await db.hallShift.findUniqueOrThrow({ where: { id: later.id } }),
+  ).toEqual(before);
+  await expect(editPeople(helperId, first.id, 3, [])).rejects.toThrow(
+    "Berechtigung",
+  );
+  await editPeople(second.id, first.id, 3, ["Neuer Name"], [memberId]);
+  await editTeam(admin.id, first.id, 4, null);
+  await expect(editPeople(second.id, first.id, 5, [])).rejects.toThrow(
+    "Berechtigung",
+  );
+  expect(
+    await db.hallShift.findUniqueOrThrow({ where: { id: first.id } }),
+  ).toMatchObject({
+    teamId: null,
+    helperNames: ["Neuer Name"],
+    staffingRevision: 5,
+  });
+  expect(
+    await db.hallPlan.count({ where: { id, AND: [hallPlanScope([], true)] } }),
+  ).toBe(1);
+  expect(
+    await db.hallPlan.count({ where: { id, AND: [hallPlanScope([], false)] } }),
+  ).toBe(0);
+  await saveHallManagers(hallId, {
+    id: otherTeam,
+    memberIds: [],
+    previousMemberIds: [additionalId],
+  });
+  await expect(editPeople(second.id, later.id, 1, [])).rejects.toThrow(
+    "Berechtigung",
+  );
 });

@@ -1794,3 +1794,48 @@ legend {
     overflow: visible;
   }
 }
+
+.hall-staffing-form,
+.hall-staffing-form fieldset {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.hall-staffing-form fieldset {
+  padding: 0;
+  margin: 8px 0 0;
+  border: 0;
+}
+
+.hall-staffing-form :is(input[type="text"], select) {
+  width: 100%;
+  min-width: 0;
+}
+
+.hall-staffing-names {
+  overflow-wrap: anywhere;
+}
+
+.hall-staffing-linked {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.hall-print-only {
+  display: none;
+}
+
+@media (max-width: 600px) {
+  .hall-staffing-form :is(input[type="text"], select) {
+    font-size: 16px;
+    min-height: 44px;
+  }
+}
+
+@media print {
+  .hall-print-only {
+    display: inline;
+  }
+}

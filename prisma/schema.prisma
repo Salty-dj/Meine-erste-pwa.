@@ -131,6 +131,7 @@ model Member {
   swapRequests        DutySwapRequest[]    @relation("SwapTarget")
   hallShifts          HallShift[]
   hallTasks           HallTask[]
+  managedHallTeams    HallTeamManager[]
   managedTeams        Team[]               @relation("TeamManager")
   managedEvents       Event[]              @relation("EventManager")
   checklistExecutions ChecklistExecution[]
@@ -149,6 +150,7 @@ model Team {
   shifts    DutyShift[]
   hallShifts HallShift[]
   hallMatches HallMatch[]
+  hallManagers HallTeamManager[]
 }
 
 model TeamMember {
@@ -578,6 +580,16 @@ model HallPlan {
   @@index([day])
 }
 
+model HallTeamManager {
+  teamId   String
+  memberId String
+  team     Team   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  member   Member @relation(fields: [memberId], references: [id], onDelete: Cascade)
+
+  @@id([teamId, memberId])
+  @@index([memberId])
+}
+
 model HallShift {
   id              String        @id @default(cuid())
   planId          String
@@ -585,6 +597,8 @@ model HallShift {
   startsAt        DateTime
   endsAt          DateTime
   requiredHelpers Int
+  helperNames     String[]      @default([])
+  staffingRevision Int         @default(0)
   locked          Boolean       @default(false)
   conflict        String        @default("")
   plan            HallPlan      @relation(fields: [planId], references: [id], onDelete: Cascade)
